@@ -27,9 +27,10 @@ for (const [key, el] of Object.entries(fields)) {
   });
 }
 const totalMass = () => settings.weight + settings.bike;
-// Developer aid only: ?demo=200 in the address rides at a fixed power without a trainer.
-const DEV_POWER = params.has('demo') ? Math.max(0, parseFloat(params.get('demo')) || 200) : null;
-const canRide = () => trainer.connected || DEV_POWER !== null;
+// Test mode (temporary): ride at a set power without a trainer. Switched on with the
+// small link under the start button, or with ?demo=200 in the address.
+let testPower = params.has('demo') ? Math.max(0, parseFloat(params.get('demo')) || 200) : null;
+const canRide = () => trainer.connected || testPower !== null;
 const toGo = () => (route.climb && ride.endDist >= route.total ? 'to the top' : 'to go');
 
 // ---------- state ----------
@@ -100,6 +101,9 @@ function deviceUi() {
   if (hrm.connected) $('s-hr-status').textContent = 'Connected';
   if (route && !ride.active && !countdown) $('s-go').textContent = goLabel();
   $('s-go').classList.toggle('waiting', !canRide());
+  $('test-chip').hidden = testPower === null || trainer.connected || !ride.active;
+  $('test-w').textContent = testPower ?? 0;
+  $('s-test').textContent = testPower === null ? 'Test without a trainer' : 'Test mode is on · turn off';
 }
 trainer.onstatus = () => {
   ride.sentGrade = null;
@@ -170,7 +174,7 @@ function readInputs() {
     ride.power = 0;
     ride.cadence = 0;
   } else {
-    ride.power = DEV_POWER || 0;
+    ride.power = testPower || 0;
     ride.cadence = ride.power > 0 ? 68 + Math.min(24, ride.power / 14) : 0;
   }
   ride.hr = hrm.fresh ? hrm.bpm : 0;
@@ -345,6 +349,11 @@ addEventListener('keydown', (e) => {
   if (e.target.matches('input, select')) return;
   if (e.key === 'c' || e.key === 'C') $('b-cam').click();
   if (e.key === 'f' || e.key === 'F') $('b-full').click();
+  if (testPower !== null && !trainer.connected && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    testPower = Math.max(0, Math.min(1500, testPower + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 50 : 10)));
+    $('test-w').textContent = testPower;
+    e.preventDefault();
+  }
 });
 addEventListener('resize', () => world?.resize());
 
@@ -446,6 +455,11 @@ async function showHistory() {
       .join('');
 }
 $('s-history').onclick = showHistory;
+$('s-test').onclick = () => {
+  testPower = testPower === null ? 200 : null;
+  $('test-w').textContent = testPower ?? 0;
+  deviceUi();
+};
 $('hist-close').onclick = () => ($('history').hidden = true);
 $('hist-rides').addEventListener('click', async (e) => {
   const id = e.target.closest('.x')?.dataset.id;
