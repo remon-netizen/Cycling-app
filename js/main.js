@@ -27,6 +27,9 @@ for (const [key, el] of Object.entries(fields)) {
   });
 }
 const totalMass = () => settings.weight + settings.bike;
+// Developer aid only: ?demo=200 in the address rides at a fixed power without a trainer.
+const DEV_POWER = params.has('demo') ? Math.max(0, parseFloat(params.get('demo')) || 200) : null;
+const canRide = () => trainer.connected || DEV_POWER !== null;
 const toGo = () => (route.climb && ride.endDist >= route.total ? 'to the top' : 'to go');
 
 // ---------- state ----------
@@ -43,7 +46,7 @@ const ride = {
   active: false, finished: false, startDist: 0, startDate: null,
   dist: 0, endDist: Infinity, v: 0, crank: 0, power: 0, cadence: 0, hr: 0, shownPower: 0,
   moving: 0, wall: 0, climbed: 0, energy: 0, powerSum: 0, hrSum: 0, hrTime: 0, cadSum: 0, cadTime: 0,
-  samples: [], demoPower: Math.max(0, parseFloat(params.get('demo')) || 200), eta: Infinity, recent: [],
+  samples: [], eta: Infinity, recent: [],
   nextLandmark: 0, sentGrade: null, sentAt: 0, secAcc: 0, etaAcc: 0, windWork: 0, draftWork: 0, braking: false, wasForest: null, trainerTime: 0, saved: false,
 };
 const bots = [];
@@ -81,7 +84,6 @@ function deviceUi() {
   t.lastElementChild.textContent = trainer.connected ? trainer.name : trainer.device && trainer._wanted ? 'Trainer reconnecting…' : 'Connect trainer';
   h.className = 'chip' + (hrm.connected ? ' on' : hrm.device && hrm._wanted ? ' lost' : '');
   h.lastElementChild.textContent = hrm.connected ? hrm.name : 'Connect heart rate';
-  $('demo-chip').hidden = !!(trainer.device && trainer._wanted) || !ride.active;
 
   const st = $('s-trainer'), ss = $('s-trainer-status');
   st.classList.toggle('ok', trainer.connected);
@@ -97,6 +99,7 @@ function deviceUi() {
   sh.textContent = hrm.connected ? `✓ ${hrm.name}` : 'Connect heart rate strap';
   if (hrm.connected) $('s-hr-status').textContent = 'Connected';
   if (route && !ride.active && !countdown) $('s-go').textContent = goLabel();
+  $('s-go').classList.toggle('waiting', !canRide());
 }
 trainer.onstatus = () => {
   ride.sentGrade = null;
@@ -167,7 +170,7 @@ function readInputs() {
     ride.power = 0;
     ride.cadence = 0;
   } else {
-    ride.power = ride.demoPower;
+    ride.power = DEV_POWER || 0;
     ride.cadence = ride.power > 0 ? 68 + Math.min(24, ride.power / 14) : 0;
   }
   ride.hr = hrm.fresh ? hrm.bpm : 0;
@@ -342,11 +345,6 @@ addEventListener('keydown', (e) => {
   if (e.target.matches('input, select')) return;
   if (e.key === 'c' || e.key === 'C') $('b-cam').click();
   if (e.key === 'f' || e.key === 'F') $('b-full').click();
-  if (!(trainer.device && trainer._wanted) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-    const stepW = e.shiftKey ? 50 : 10;
-    ride.demoPower = Math.max(0, Math.min(1500, ride.demoPower + (e.key === 'ArrowUp' ? stepW : -stepW)));
-    e.preventDefault();
-  }
 });
 addEventListener('resize', () => world?.resize());
 
@@ -471,7 +469,7 @@ const othersRiding = () => [...net.peers.values()].some((p) => here(p) && p.ridi
 function goLabel() {
   if (net.room && othersRiding()) return 'Join the ride';
   if (net.room) return net.peers.size ? 'Start for everyone' : 'Start ride (nobody else here yet)';
-  return trainer.connected ? 'Start ride' : 'Start in demo mode';
+  return canRide() ? 'Start ride' : 'Connect your trainer to start';
 }
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const mpStatus = (text, err = false) => {
@@ -529,7 +527,16 @@ function startCountdown(seconds, startDist) {
     startRide(startDist);
   }, 1000);
 }
+function needTrainer() {
+  if (canRide()) return false;
+  const ss = $('s-trainer-status');
+  ss.className = 'hint err';
+  ss.textContent = 'Connect your trainer first: pedal a few strokes to wake it, then click "Connect trainer".';
+  $('s-trainer').scrollIntoView({ block: 'center', behavior: 'smooth' });
+  return true;
+}
 function goClicked() {
+  if (needTrainer()) return;
   const startDist = route.landmarks[+$('i-start').value].dist;
   if (net.room && [...net.peers.values()].some((p) => !p.riding) && !othersRiding()) {
     net.send('start', { id: net.user.id, in: 5, startDist, route: routeId, length: +$('i-length').value || 0 });
@@ -538,6 +545,7 @@ function goClicked() {
 }
 net.onstart = async (p) => {
   if (ride.active || countdown || !isFinite(p.startDist)) return;
+  if (!canRide()) return mpStatus('The group ride is starting. Connect your trainer, then click "Join the ride".', true);
   const began = performance.now();
   if (p.route !== routeId) {
     if (!ROUTES.some((r) => r.id === p.route)) return;
@@ -702,7 +710,6 @@ function updateHud(dt) {
   const where = wind.forest ? 'sheltered by the forest' : wind.exposure > 0.8 ? 'fully exposed' : 'open country';
   $('h-wx').textContent = `${Math.round(wind.temp)}°C · ${where}${Math.abs(cost) >= 3 ? ` · ${cost > 0 ? '+' : '−'}${Math.abs(Math.round(cost))} W` : ''}`;
   $('h-wind-box').hidden = weather.mode === 'calm' && !weather.live;
-  $('demo-w').textContent = ride.demoPower;
   $('paused').hidden = !(ride.active && !ride.finished && ride.v < 0.3 && ride.power < 1);
   if (canvasAcc >= 0.5) {
     canvasAcc = 0;
@@ -826,7 +833,7 @@ const chooseRoute = (id) => (routeLoading = (routeLoading || Promise.resolve()).
 async function init() {
   if (!bluetoothAvailable()) {
     $('s-foot').className = 'foot err';
-    $('s-foot').textContent = 'This browser has no Web Bluetooth, so the trainer cannot connect. Open this page in Chrome or Edge. Demo mode still works.';
+    $('s-foot').textContent = 'This browser has no Web Bluetooth, so the trainer cannot connect. Open this page in Chrome or Edge.';
   }
   $('i-route').innerHTML = Object.keys(TYPES)
     .map((t) => `<optgroup label="${TYPES[t]}">${ROUTES.filter((r) => r.type === t).map((r) => `<option value="${r.id}">${esc(r.name)} · ${r.km} km · ${r.up} m↑</option>`).join('')}</optgroup>`)
