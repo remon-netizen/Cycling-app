@@ -42,7 +42,8 @@ export class Net {
 
   _setUser(u) {
     const next = u ? { id: u.id, email: u.email, name: u.user_metadata?.name || u.email.split('@')[0] } : null;
-    if (next?.id === this.user?.id && next?.name === this.user?.name) return;
+    if (this._known && next?.id === this.user?.id && next?.name === this.user?.name) return;
+    this._known = true;
     this.user = next;
     if (!next) this.leave();
     this.onauth();
