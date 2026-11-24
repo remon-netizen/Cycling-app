@@ -4,6 +4,7 @@ import { Trainer, HeartRate, bluetoothAvailable } from './ble.js';
 import { stepSpeed, estimateTime, airAsGrade, draftSaving, drag, cdaFor, CRR } from './physics.js';
 import { Weather } from './weather.js';
 import { Net, cleanCode, newCode } from './net.js';
+import { History, buildRecord, summarise, improvements, WINDOW_NAMES } from './history.js';
 import { RouteProfile, AheadProfile, MiniMap, gradeColor } from './hud.js';
 import { buildTcx, download } from './tcx.js';
 
@@ -35,13 +36,14 @@ const wind = { speed: 0, head: 0, side: 0, wx: 0, wz: 0, temp: 15, cloud: 0, exp
 const botWind = { draft: 0 }, noDraft = {}, gaps = [];
 const net = new Net();
 const remotes = new Map(); // peer id -> 3D rider
+const history = new History(net);
 
 const ride = {
   active: false, finished: false, startDist: 0, startDate: null,
   dist: 0, v: 0, crank: 0, power: 0, cadence: 0, hr: 0, shownPower: 0,
   moving: 0, wall: 0, climbed: 0, energy: 0, powerSum: 0, hrSum: 0, hrTime: 0, cadSum: 0, cadTime: 0,
   samples: [], demoPower: Math.max(0, parseFloat(params.get('demo')) || 200), eta: Infinity, recent: [],
-  nextLandmark: 0, sentGrade: null, sentAt: 0, secAcc: 0, etaAcc: 0, windWork: 0, draftWork: 0, braking: false, wasForest: null,
+  nextLandmark: 0, sentGrade: null, sentAt: 0, secAcc: 0, etaAcc: 0, windWork: 0, draftWork: 0, braking: false, wasForest: null, trainerTime: 0, saved: false,
 };
 const bots = [];
 
@@ -138,7 +140,7 @@ function startRide(startDist) {
   Object.assign(ride, {
     active: true, finished: false, startDist, startDate: new Date(), dist: startDist, v: 0,
     moving: 0, wall: 0, climbed: 0, energy: 0, powerSum: 0, hrSum: 0, hrTime: 0, cadSum: 0, cadTime: 0,
-    samples: [], recent: [], sentGrade: null, secAcc: 0, etaAcc: 5, windWork: 0, draftWork: 0, braking: false, wasForest: null,
+    samples: [], recent: [], sentGrade: null, secAcc: 0, etaAcc: 5, windWork: 0, draftWork: 0, braking: false, wasForest: null, trainerTime: 0, saved: false,
   });
   ride.nextLandmark = route.landmarks.findIndex((l) => l.dist > startDist + 50);
   const wkg = [2.1, 2.6, 2.9, 3.2, 3.5, 4.0], offs = [18, 45, 90, 160, 260, 420];
@@ -198,6 +200,7 @@ function simulate(dt) {
     if (gain > 0) ride.climbed += gain;
     if (ride.v > 0.3 || ride.power > 0) {
       ride.moving += h;
+      if (trainer.connected) ride.trainerTime += h;
       ride.powerSum += ride.power * h;
       ride.energy += ride.power * h;
       if (ride.cadence > 0) { ride.cadSum += ride.cadence * h; ride.cadTime += h; }
@@ -227,6 +230,7 @@ function simulate(dt) {
     ride.finished = true;
     trainer.setGrade(0, CRR);
     showSummary(true);
+    saveRide();
   }
 }
 
@@ -301,6 +305,7 @@ function showSummary(finished) {
   }
   $('sum-grid').innerHTML = cells.map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join('');
   $('sum-continue').hidden = finished;
+  if (!ride.saved) $('sum-note').textContent = finished ? '' : worthSaving() ? 'This ride is saved when you go back to the start.' : '';
   $('sum-tcx').disabled = ride.samples.length < 2;
   $('summary').hidden = false;
 }
@@ -308,7 +313,7 @@ function showSummary(finished) {
 $('b-end').onclick = () => showSummary(ride.finished);
 $('sum-continue').onclick = () => ($('summary').hidden = true);
 $('sum-again').onclick = () => {
-  if (!ride.finished && ride.samples.length > 60 && !confirm('Leave this ride? Download it first if you want to keep it.')) return;
+  saveRide();
   trainer.setGrade(0, CRR);
   ride.active = false;
   ride.finished = false;
@@ -338,6 +343,115 @@ addEventListener('keydown', (e) => {
   }
 });
 addEventListener('resize', () => world?.resize());
+
+// ---------- history ----------
+// Only real rides count: at least two minutes, with the watts coming from a trainer.
+const worthSaving = () => ride.moving >= 120 && ride.samples.length >= 120 && (ride.trainerTime > ride.moving * 0.6 || net.local);
+async function saveRide() {
+  if (ride.saved || !worthSaving()) return;
+  ride.saved = true;
+  const rec = buildRecord(ride, routeId, settings.weight);
+  const note = $('sum-note');
+  note.textContent = 'Saving your ride…';
+  try {
+    const earlier = await history.load();
+    const where = await history.save(rec);
+    const wins = improvements(rec, earlier);
+    note.innerHTML =
+      (where === 'account' ? 'Saved to your account.' : net.user && !net.local ? 'Saved on this device only (the account could not be reached).' : 'Saved on this device. Sign in to keep rides across devices.') +
+      wins.map((w) => `<br><b>${esc(w)}</b>`).join('');
+  } catch (e) {
+    console.error(e);
+    note.textContent = 'This ride could not be saved. Download it to keep it.';
+  }
+}
+
+const fmtDate = (iso) => new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: '2-digit' });
+function drawTrend(el, pts) {
+  if (pts.length < 2) {
+    el.innerHTML = '<div class="hint">The chart appears after your second ride of ten minutes or more.</div>';
+    return;
+  }
+  const W = 660, H = 190, L = 40, R = 46, T = 12, B = 24;
+  const ws = pts.map((p) => p.w), lo = Math.floor((Math.min(...ws) - 10) / 20) * 20, hi = Math.ceil((Math.max(...ws) + 10) / 20) * 20;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1;
+  const x = (t) => L + ((t - t0) / Math.max(1, t1 - t0)) * (W - L - R), y = (w) => T + (1 - (w - lo) / (hi - lo)) * (H - T - B);
+  const ticks = [lo, (lo + hi) / 2, hi];
+  const last = pts[pts.length - 1];
+  el.innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Power per ride over time">` +
+    ticks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="axis" x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${Math.round(v)}</text>`).join('') +
+    `<text class="axis" x="${L}" y="${H - 4}">${fmtDate(new Date(t0).toISOString())}</text><text class="axis" x="${W - R}" y="${H - 4}" text-anchor="end">${fmtDate(new Date(t1).toISOString())}</text>` +
+    `<polyline class="line" points="${pts.map((p) => `${x(p.t).toFixed(1)},${y(p.w).toFixed(1)}`).join(' ')}"/>` +
+    pts.map((p, i) => `<circle class="dot" data-i="${i}" cx="${x(p.t).toFixed(1)}" cy="${y(p.w).toFixed(1)}" r="4.5"/>`).join('') +
+    `<text class="last" x="${x(last.t) + 9}" y="${y(last.w) + 4}">${last.w} W</text>` +
+    pts.map((p, i) => `<circle class="hit" data-i="${i}" cx="${x(p.t).toFixed(1)}" cy="${y(p.w).toFixed(1)}" r="14"/>`).join('') +
+    '</svg><div class="tip" hidden></div>';
+  const tip = el.querySelector('.tip'), svg = el.querySelector('svg');
+  const show = (i) => {
+    el.querySelectorAll('.dot').forEach((d) => d.classList.toggle('on', +d.dataset.i === i));
+    if (i < 0) return (tip.hidden = true);
+    const p = pts[i], box = svg.getBoundingClientRect();
+    tip.innerHTML = `<b>${p.w} W</b> ${p.twenty ? 'best 20 min' : 'whole ride'}<br>${fmtDate(new Date(p.t).toISOString())} · ${esc(routeName(p.route))}`;
+    tip.style.left = `${(x(p.t) / W) * box.width}px`;
+    tip.style.top = `${(y(p.w) / H) * box.height}px`;
+    tip.hidden = false;
+  };
+  el.querySelectorAll('.hit').forEach((h) => {
+    h.addEventListener('pointerenter', () => show(+h.dataset.i));
+    h.addEventListener('pointerleave', () => show(-1));
+  });
+}
+async function showHistory() {
+  $('history').hidden = false;
+  $('hist-where').textContent = 'Loading…';
+  const rides = await history.load();
+  $('hist-where').textContent =
+    history.where === 'account' ? `Rides saved to ${net.user.name}'s account` : net.user && !net.local ? 'Showing rides saved on this device (the account could not be reached)' : 'Rides saved on this device. Sign in to keep them across devices.';
+  $('hist-empty').hidden = rides.length > 0;
+  $('hist-body').hidden = rides.length === 0;
+  if (!rides.length) return;
+  const s = summarise(rides);
+  const tile = (v, l, extra = '') => `<div class="tile"><b>${v}</b><span>${l}</span>${extra ? `<i>${extra}</i>` : ''}</div>`;
+  $('hist-tiles').innerHTML =
+    tile(s.count, 'rides', `${s.last28} in the last 4 weeks`) +
+    tile(s.hours.toFixed(1), 'hours', `${Math.round(s.km)} km`) +
+    tile(Math.round(s.climbed).toLocaleString(), 'm climbed') +
+    tile(s.ftp ? `${s.ftp} W` : '–', 'estimated FTP', s.ftp ? `${s.weight ? (s.ftp / s.weight).toFixed(2) + ' W/kg · ' : ''}95% of your best 20 min` : 'needs a 20-minute effort');
+  $('hist-chart-sub').textContent = 'One dot per ride: your best 20 minutes, or the whole ride if it was shorter.';
+  drawTrend($('hist-chart'), s.trend);
+  $('hist-bests').innerHTML =
+    '<tr><th>Held for</th><th>Best ever</th><th>Last 6 weeks</th><th>Change</th></tr>' +
+    s.bests
+      .filter((b) => b.ever)
+      .map((b) => {
+        const d = b.recent && b.before ? b.recent - b.before : null;
+        const change = d === null ? '–' : `<span class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d > 0 ? '▲ +' : d < 0 ? '▼ −' : ''}${Math.abs(d)} W</span>`;
+        return `<tr><td>${WINDOW_NAMES[b.w]}</td><td>${b.ever} W</td><td>${b.recent ? b.recent + ' W' : '–'}</td><td>${change}</td></tr>`;
+      })
+      .join('');
+  $('hist-routes').innerHTML =
+    '<tr><th>Climb</th><th>Rides</th><th>Fastest full ascent</th><th class="opt">Set on</th></tr>' +
+    s.routes.map((r) => `<tr><td>${esc(routeName(r.route))}</td><td>${r.rides}</td><td>${r.best ? fmtTime(r.best) : '–'}</td><td class="opt">${r.bestAt ? fmtDate(r.bestAt) : '–'}</td></tr>`).join('');
+  $('hist-rides').innerHTML =
+    '<tr><th>Ride</th><th>Time</th><th class="opt">km</th><th>Avg W</th><th class="opt">NP</th><th class="opt">Avg bpm</th><th></th></tr>' +
+    rides
+      .slice(0, 40)
+      .map((r) => `<tr><td>${fmtDate(r.started_at)} · ${esc(routeName(r.route))}${r.finished ? '' : ' (part)'}</td><td>${fmtTime(r.duration_s)}</td><td class="opt">${(r.distance_m / 1000).toFixed(1)}</td><td>${r.avg_power ?? '–'}</td><td class="opt">${r.np ?? '–'}</td><td class="opt">${r.avg_hr ?? '–'}</td><td><button class="x" data-id="${esc(String(r.id))}" title="Delete this ride">✕</button></td></tr>`)
+      .join('');
+}
+$('s-history').onclick = showHistory;
+$('hist-close').onclick = () => ($('history').hidden = true);
+$('hist-rides').addEventListener('click', async (e) => {
+  const id = e.target.closest('.x')?.dataset.id;
+  if (!id || !confirm('Delete this ride for good?')) return;
+  try {
+    await history.remove(id);
+  } catch (err) {
+    alert(`Could not delete the ride: ${err.message}`);
+  }
+  showHistory();
+});
 
 // ---------- riding together ----------
 const KITS = [

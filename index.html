@@ -156,6 +156,7 @@
     </div>
 
     <button id="s-go" class="btn primary" disabled>Loading…</button>
+    <button id="s-history" class="btn ghost">My rides and progress</button>
     <div class="foot" id="s-foot">No trainer nearby? Start anyway and use the ↑ ↓ keys to set a demo power.</div>
   </div>
 </div>
@@ -167,9 +168,35 @@
       <div class="tag" id="sum-sub"></div>
     </header>
     <div class="sum-grid" id="sum-grid"></div>
+    <div class="sum-note" id="sum-note"></div>
     <button id="sum-tcx" class="btn primary">Download ride (.tcx)</button>
     <button id="sum-continue" class="btn ghost">Keep riding</button>
     <button id="sum-again" class="btn ghost">Back to start</button>
+  </div>
+</div>
+
+<div id="history" class="overlay" hidden>
+  <div class="card">
+    <header class="hist-head">
+      <div>
+        <div class="logo small">MY PROGRESS</div>
+        <div class="tag" id="hist-where"></div>
+      </div>
+      <button id="hist-close" class="btn small">Close</button>
+    </header>
+    <div id="hist-empty" class="hint" hidden>No rides yet. Finish a ride on your trainer and it will show up here.</div>
+    <div id="hist-body">
+      <div class="tiles" id="hist-tiles"></div>
+      <h3>Power over time</h3>
+      <div class="hint" id="hist-chart-sub"></div>
+      <div class="chart" id="hist-chart"></div>
+      <h3>Best power</h3>
+      <table class="tbl" id="hist-bests"></table>
+      <h3>Climbs</h3>
+      <table class="tbl" id="hist-routes"></table>
+      <h3>Rides</h3>
+      <table class="tbl" id="hist-rides"></table>
+    </div>
   </div>
 </div>
 

@@ -116,6 +116,37 @@ select option { color: #111; }
 .riders .g { opacity: 0.8; min-width: 62px; text-align: right; }
 .riders .w { opacity: 0.6; min-width: 34px; text-align: right; }
 
+.sum-note { font-size: 13.5px; margin: 14px 0 0; line-height: 1.5; }
+.sum-note b { color: #ffc155; }
+#history .card { align-self: flex-start; }
+.hist-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.logo.small { font-size: 20px; letter-spacing: 0.22em; }
+#history h3 { margin: 26px 0 8px; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 20px; }
+.tile { background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; padding: 12px 14px; }
+.tile b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.tile span { font-size: 12px; opacity: 0.65; }
+.tile i { display: block; font-style: normal; font-size: 12px; opacity: 0.8; margin-top: 2px; }
+.chart { position: relative; margin-top: 6px; }
+.chart svg { width: 100%; height: 190px; display: block; overflow: visible; }
+.chart .grid { stroke: rgba(255, 255, 255, 0.1); stroke-width: 1; }
+.chart .axis { fill: rgba(255, 255, 255, 0.6); font-size: 11px; }
+.chart .line { fill: none; stroke: #6fb7ff; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .dot { fill: #6fb7ff; stroke: #10161f; stroke-width: 2; }
+.chart .dot.on { fill: #fff; }
+.chart .hit { fill: transparent; cursor: default; }
+.chart .last { fill: #fff; font-size: 12px; font-weight: 600; }
+.tip { position: absolute; pointer-events: none; background: #0b1019; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; white-space: nowrap; transform: translate(-50%, -115%); }
+.tip b { font-size: 14px; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.tbl th { text-align: right; font-weight: 500; font-size: 11.5px; opacity: 0.6; padding: 4px 8px; }
+.tbl td { text-align: right; padding: 6px 8px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.tbl th:first-child, .tbl td:first-child { text-align: left; padding-left: 2px; }
+.tbl .up { color: #62d27a; }
+.tbl .down { color: #f79a3e; }
+.tbl .x { background: none; border: 0; opacity: 0.5; padding: 0 4px; font-size: 14px; }
+.tbl .x:hover { opacity: 1; color: #ff9d8f; }
+
 @media (max-width: 900px) {
   .main-stats { gap: 12px; padding: 10px 14px; top: auto; bottom: 190px; }
   .power .v { font-size: 56px; }
@@ -123,4 +154,6 @@ select option { color: #111; }
   .profiles .ahead { display: none; }
   .grid2 { grid-template-columns: 1fr; }
   .toast { top: 200px; }
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+  .tbl .opt { display: none; }
 }
