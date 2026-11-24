@@ -35,12 +35,18 @@ export const compass = (deg) => COMPASS[Math.round((((deg % 360) + 360) % 360) /
 export class Weather {
   constructor(route) {
     this.route = route;
-    const lm = route.landmarks;
-    // Bédoin, Chalet Reynard, summit
-    this.stations = [lm[0], lm[2], lm[lm.length - 1]].map((l) => {
-      const p = route.at(l.dist, {});
-      return { name: l.name, dist: l.dist, ele: route.ele(l.dist), ...route.latLon(p.x, p.z) };
+    const meta = route.meta;
+    this.F = meta.forest;
+    this.B = meta.bare;
+    // foot of the climb, a point halfway up, and the top
+    const midEle = meta.midEle || (route.ele(0) + meta.topEle) / 2;
+    let mid = route.total / 2;
+    for (let d = 0; d < route.total; d += 50) if (route.ele(d) >= midEle) { mid = d; break; }
+    this.stations = [0, mid, route.total].map((dist) => {
+      const p = route.at(dist, {});
+      return { dist, ele: route.ele(dist), ...route.latLon(p.x, p.z) };
     });
+    this.names = [meta.start, meta.top];
     this.mode = 'calm';
     this.live = false;
     this.fetchedAt = 0;
@@ -56,44 +62,61 @@ export class Weather {
     });
   }
 
+  async _fetchLive() {
+    const s = this.stations;
+    const q = (f) => s.map(f).join(',');
+    const url =
+      `https://api.open-meteo.com/v1/forecast?latitude=${q((x) => x.lat.toFixed(4))}&longitude=${q((x) => x.lon.toFixed(4))}` +
+      `&elevation=${q((x) => Math.round(x.ele))}&current=temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover,weather_code&wind_speed_unit=ms`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`weather service answered ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length !== s.length) throw new Error('unexpected weather answer');
+    return data.map(({ current: c }) => ({
+      speed: c.wind_speed_10m, gust: Math.max(c.wind_gusts_10m ?? 0, c.wind_speed_10m), dir: c.wind_direction_10m,
+      temp: c.temperature_2m, cloud: c.cloud_cover ?? 0, code: c.weather_code,
+    }));
+  }
+
   // mode: 'live' | 'mistral' | 'calm'. Returns true if the requested weather is in use.
   async load(mode) {
+    const turn = (this._turn = (this._turn || 0) + 1); // a later choice wins over a slow answer
     this.mode = mode;
     this.live = false;
     if (mode !== 'live') {
       this._set(PRESETS[mode] || PRESETS.calm);
       return true;
     }
+    this._set(PRESETS.calm);
     try {
-      const s = this.stations;
-      const q = (f) => s.map(f).join(',');
-      const url =
-        `https://api.open-meteo.com/v1/forecast?latitude=${q((x) => x.lat.toFixed(4))}&longitude=${q((x) => x.lon.toFixed(4))}` +
-        `&elevation=${q((x) => Math.round(x.ele))}&current=temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover,weather_code&wind_speed_unit=ms`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) throw new Error(`weather service answered ${res.status}`);
-      const data = await res.json();
-      if (!Array.isArray(data) || data.length !== s.length) throw new Error('unexpected weather answer');
-      this._set(
-        data.map(({ current: c }) => ({
-          speed: c.wind_speed_10m, gust: Math.max(c.wind_gusts_10m ?? 0, c.wind_speed_10m), dir: c.wind_direction_10m,
-          temp: c.temperature_2m, cloud: c.cloud_cover ?? 0, code: c.weather_code,
-        }))
-      );
+      const obs = await this._fetchLive();
+      if (turn !== this._turn) return true;
+      this._set(obs);
       this.live = true;
       this.fetchedAt = Date.now();
       return true;
     } catch (e) {
       console.warn('Live weather unavailable:', e);
-      this._set(PRESETS.calm);
-      return false;
+      return turn !== this._turn;
+    }
+  }
+
+  // Update live weather during a ride. If it fails, the last conditions stay.
+  async refresh() {
+    const turn = this._turn;
+    try {
+      const obs = await this._fetchLive();
+      if (turn === this._turn && this.live) this._set(obs);
+    } catch (e) {
+      console.warn('Weather refresh failed, keeping the last conditions:', e);
     }
   }
 
   // How much of the wind reaches the road at this height.
   exposure(ele) {
-    const forest = smooth(470, 590, ele) * (1 - smooth(1390, 1530, ele));
-    const bare = smooth(1400, 1520, ele);
+    const F = this.F, B = this.B;
+    const forest = F ? smooth(F[0], F[1], ele) * (1 - smooth(F[2], F[3], ele)) : 0;
+    const bare = smooth(B[0], B[1], ele);
     return EXPOSURE_OPEN + forest * (EXPOSURE_FOREST - EXPOSURE_OPEN) + bare * (EXPOSURE_BARE - EXPOSURE_OPEN);
   }
   inForest(ele) {
@@ -146,6 +169,6 @@ export class Weather {
       const o = this.obs[i];
       return `${name} ${Math.round(o.temp)}°C, ${compass(o.dir)} ${Math.round(o.speed * 3.6)} km/h (gusts ${Math.round(o.gust * 3.6)})`;
     };
-    return `${part(0, 'Bédoin')} · ${part(2, 'Summit')}`;
+    return `${part(0, this.names[0])} · ${part(2, this.names[1])}`;
   }
 }

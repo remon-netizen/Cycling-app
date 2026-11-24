@@ -37,22 +37,47 @@ class Device {
     this.device = device;
     this.name = device.name || 'Unknown device';
     this._wanted = true;
-    device.addEventListener('gattserverdisconnected', () => this._lost(device));
-    await this._setup();
+    const session = (this._session = {}); // one per connect, so old listeners and retry loops stand down
+    device.addEventListener('gattserverdisconnected', () => this._session === session && this._lost(device, session));
+    try {
+      await this._setup();
+    } catch (e) {
+      if (this._session === session) {
+        this._wanted = false;
+        this._session = null;
+        this.device = null;
+        try { device.gatt?.disconnect(); } catch {}
+        this._reset();
+        this.onstatus();
+      }
+      throw e;
+    }
+    if (this._session !== session) return;
     this.connected = true;
     this.onstatus();
   }
 
-  async _lost(device) {
-    if (device !== this.device) return;
+  async _lost(device, session) {
+    if (device !== this.device || this._retrying) return;
+    this._retrying = true;
     this.connected = false;
     this._reset();
     this.onstatus();
-    for (let i = 0; i < 30 && this._wanted && device === this.device; i++) {
+    const mine = () => this._wanted && device === this.device && this._session === session;
+    try {
+      await this._retry(mine);
+    } finally {
+      this._retrying = false;
+    }
+  }
+
+  async _retry(mine) {
+    for (let i = 0; i < 30 && mine(); i++) {
       await sleep(2000);
-      if (!this._wanted || device !== this.device || this.connected) return;
+      if (!mine() || this.connected) return;
       try {
         await this._setup();
+        if (!mine()) return;
         this.connected = true;
         this.onstatus();
         return;
@@ -64,6 +89,7 @@ class Device {
 
   disconnect() {
     this._wanted = false;
+    this._session = null;
     this.connected = false;
     try { this.device?.gatt?.disconnect(); } catch {}
     this._reset();

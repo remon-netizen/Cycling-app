@@ -1,7 +1,6 @@
 // Route geometry: real GPS trace of the climb, projected to local metres.
 // World coordinates: x = east, z = -north (so y is up), all in metres.
 
-const SUMMIT_ELEVATION = 1909;
 
 const cr = (p0, p1, p2, p3, t) => {
   const t2 = t * t, t3 = t2 * t;
@@ -21,6 +20,8 @@ export class Route {
     const pts = data.route, n = pts.length;
     this.name = data.name;
     this.sub = data.sub;
+    const meta = (this.meta = data.meta);
+    const SUMMIT_ELEVATION = meta.topEle;
     this.lat0 = data.lat0;
     this.lon0 = data.lon0;
     this.grid = data.grid;
@@ -53,11 +54,11 @@ export class Route {
       }
       sm[i] = acc / wsum;
     }
-    const MAX_SLOPE = 0.118;
+    const MAX_SLOPE = meta.maxSlope || 0.12, climbFrom = meta.climbFrom || 0;
     raw[0] = sm[0];
     for (let i = 1; i < n; i++) {
       const ds = D[i] - D[i - 1];
-      const minSlope = D[i] < 5000 ? -0.04 : 0.005;
+      const minSlope = D[i] < climbFrom ? -0.04 : 0.005;
       raw[i] = raw[i - 1] + Math.min(MAX_SLOPE, Math.max(minSlope, (sm[i] - sm[i - 1]) / ds)) * ds;
     }
 
@@ -106,12 +107,31 @@ export class Route {
       return this.total;
     };
     this.landmarks = [
-      { name: 'Bédoin', dist: 0 },
-      { name: 'Saint-Estève', dist: this._forestStart() },
-      { name: 'Chalet Reynard', dist: firstAbove(1417) },
-      { name: 'Stèle Tom Simpson', dist: this.total - 1350 },
-      { name: 'Sommet', dist: this.total },
-    ];
+      { name: meta.start, dist: 0 },
+      ...(meta.landmarks || []).map((l) => ({
+        name: l.name,
+        dist: l.steepStart ? this._forestStart() : l.fromTop ? this.total - l.fromTop : l.km ? l.km * 1000 : firstAbove(l.ele),
+      })),
+      { name: meta.top, dist: this.total },
+    ].sort((a, b) => a.dist - b.dist);
+
+    // Hairpins: a turn of more than ~135 degrees within 80 m of road.
+    const turnAt = (i) => {
+      let sum = 0;
+      for (let k = i - 4; k < i + 4; k++) {
+        const ax = X[k] - X[k - 1], az = Z[k] - Z[k - 1], bx = X[k + 1] - X[k], bz = Z[k + 1] - Z[k];
+        sum += Math.atan2(ax * bz - az * bx, ax * bx + az * bz);
+      }
+      return Math.abs(sum);
+    };
+    this.hairpins = [];
+    for (let i = 6; i < n - 6; i++) {
+      const t = turnAt(i);
+      if (t < 2.35) continue;
+      let peak = true;
+      for (let k = Math.max(6, i - 10); k <= Math.min(n - 7, i + 10) && peak; k++) if (k !== i && turnAt(k) > t) peak = false;
+      if (peak && (!this.hairpins.length || D[i] - this.hairpins[this.hairpins.length - 1] > 80)) this.hairpins.push(D[i]);
+    }
   }
 
   // The famous hairpin where the gentle approach ends and the forest ramps begin.

@@ -10,6 +10,8 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 const params = new URLSearchParams(location.search);
 const LOCAL = params.get('net') === 'local';
 const STALE_MS = 6000;
+const MAX_PEERS = 40;
+const num = (x, lo, hi) => (Number.isFinite(+x) ? Math.min(hi, Math.max(lo, +x)) : lo);
 
 export const cleanCode = (s) => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
 export const newCode = () => Array.from({ length: 5 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join('');
@@ -33,7 +35,7 @@ export class Net {
       return;
     }
     if (!this.available) return;
-    const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
+    const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.2/+esm');
     this.sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     this.sb.auth.onAuthStateChange((_event, session) => this._setUser(session?.user));
     const { data } = await this.sb.auth.getSession();
@@ -116,16 +118,17 @@ export class Net {
       if (this.peers.delete(p.id)) this.onpeers();
       return;
     }
-    if (typeof p.id !== 'string' || !isFinite(p.dist) || !isFinite(p.v)) return;
+    if (typeof p.id !== 'string' || p.id.length > 64 || !Number.isFinite(+p.dist) || !Number.isFinite(+p.v)) return;
     let peer = this.peers.get(p.id);
     const isNew = !peer;
+    if (isNew && this.peers.size >= MAX_PEERS) return;
     if (isNew) this.peers.set(p.id, (peer = { id: p.id, crank: 0, shown: +p.dist }));
-    const was = peer.riding;
+    const was = peer.riding, wasRoute = peer.route, wasDone = peer.finished;
     Object.assign(peer, {
-      name: String(p.name || 'Rider').slice(0, 20), riding: !!p.riding, finished: !!p.finished, dist: +p.dist,
-      v: Math.min(40, Math.max(0, +p.v)), power: +p.power || 0, wkg: +p.wkg || 0, cadence: +p.cadence || 0, last: performance.now(),
+      name: String(p.name || 'Rider').slice(0, 20), route: String(p.route || '').slice(0, 24), riding: !!p.riding, finished: !!p.finished, dist: num(p.dist, 0, 1e6),
+      v: num(p.v, 0, 40), power: num(p.power, 0, 3000), wkg: num(p.wkg, 0, 30), cadence: num(p.cadence, 0, 250), last: performance.now(),
     });
-    if (isNew || was !== peer.riding) this.onpeers();
+    if (isNew || was !== peer.riding || wasRoute !== peer.route || wasDone !== peer.finished) this.onpeers();
   }
 
   // Between messages, keep everyone rolling at their last known speed.

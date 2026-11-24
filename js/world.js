@@ -37,6 +37,8 @@ const COL = {
   fieldA: C(0x8f9b54), fieldB: C(0xb9a66c), fieldC: C(0x6e8c46),
   forestA: C(0x3c5a30), forestB: C(0x50683a),
   screeA: C(0xd6d2c6), screeB: C(0xe9e6dc),
+  meadowA: C(0x7d9a4e), meadowB: C(0x93a35a), meadowC: C(0x5f8a42),
+  alpineA: C(0x868c6c), alpineB: C(0xa09f92), snow: C(0xf4f6f8),
   vergeLow: C(0x9c9278), vergeHigh: C(0xcbc6b8),
 };
 const HORIZON = 0xcfdfec;
@@ -79,6 +81,10 @@ const CAMERAS = [
 export class World {
   constructor(canvas, route) {
     this.route = route;
+    const meta = route.meta;
+    this.F = meta.forest || [1e8, 1e8 + 1, 1e8 + 2, 1e8 + 3]; // forest: starts, full, thins, gone
+    this.B = meta.bare; // open rock: from, to
+    this.alpine = meta.high !== 'scree';
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.scene = new THREE.Scene();
@@ -146,6 +152,12 @@ export class World {
   }
   removeRemote(r) {
     this.scene.remove(r.group);
+    r.group.traverse((o) => {
+      for (const m of [].concat(o.material || [])) {
+        m.map?.dispose();
+        m.dispose();
+      }
+    });
   }
 
   resize() {
@@ -153,6 +165,18 @@ export class World {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+  }
+
+  // Free everything, so a world for another route can take over the canvas.
+  dispose() {
+    this.scene.traverse((o) => {
+      o.geometry?.dispose();
+      for (const m of [].concat(o.material || [])) {
+        m.map?.dispose();
+        m.dispose();
+      }
+    });
+    this.renderer.dispose();
   }
 
   // ---------- terrain ----------
@@ -208,10 +232,12 @@ export class World {
   terrainColor(x, z, h, d, out) {
     const n1 = vnoise(x / 420, z / 420), n2 = vnoise(x / 130 + 50, z / 130 + 80);
     const hj = h + (n2 - 0.5) * 120;
-    const forest = smooth(470, 600, hj), scree = smooth(1400, 1540, hj);
-    out.copy(COL.fieldA).lerp(COL.fieldB, smooth(0.35, 0.45, n1)).lerp(COL.fieldC, smooth(0.6, 0.7, n1));
+    const F = this.F, B = this.B, al = this.alpine;
+    const forest = smooth(F[0], F[1] + 10, hj) * (1 - smooth(F[2], F[3] + 10, hj)), scree = smooth(B[0], B[1] + 20, hj);
+    out.copy(al ? COL.meadowA : COL.fieldA).lerp(al ? COL.meadowB : COL.fieldB, smooth(0.35, 0.45, n1)).lerp(al ? COL.meadowC : COL.fieldC, smooth(0.6, 0.7, n1));
     out.lerp(this._c2.copy(COL.forestA).lerp(COL.forestB, n2), forest);
-    out.lerp(this._c2.copy(COL.screeA).lerp(COL.screeB, n2), scree);
+    out.lerp(this._c2.copy(al ? COL.alpineA : COL.screeA).lerp(al ? COL.alpineB : COL.screeB, n2), scree);
+    if (al) out.lerp(COL.snow, smooth(2450, 2750, hj) * 0.75);
     if (d < 95) {
       const fade = 1 - smooth(60, 95, d);
       out.multiplyScalar(1 + (vnoise(x / 5, z / 5) - 0.5) * 0.22 * fade);
@@ -324,15 +350,32 @@ export class World {
     const cols = OFF.length + 2; // plus a skirt each side
     const STEP = 10;
     const rows = Math.floor((route.total + 220) / STEP) + 2;
+    // is the nearest bit of road to this point the bit we are building the strip for?
+    const mine = (x, z, along, reach) => {
+      const nr = route.nearest(x, z);
+      return !nr || Math.abs(nr.dist - along) <= reach * 1.5 + 30;
+    };
     const pos = new Float32Array(rows * cols * 3), nor = new Float32Array(rows * cols * 3), col = new Float32Array(rows * cols * 3);
     let k = 0;
     for (let r = 0; r < rows; r++) {
       const s = Math.min(-110 + r * STEP, route.total + 110);
       route.at(s, P);
-      const lx = P.tz, lz = -P.tx;
+      const lx = P.tz, lz = -P.tx, sc = Math.min(route.total, Math.max(0, s));
       for (let ci = 0; ci < cols; ci++) {
         const skirt = ci === 0 || ci === cols - 1;
-        const o = OFF[Math.min(OFF.length - 1, Math.max(0, ci - 1))];
+        // On hairpins the strips of two legs of road would overlap and bury
+        // each other's tarmac, so each strip stops halfway to the other leg.
+        let o = OFF[Math.min(OFF.length - 1, Math.max(0, ci - 1))];
+        const reach = Math.abs(o), sgn = Math.sign(o);
+        if (reach > 4.2 && !mine(P.x + lx * o, P.z + lz * o, sc, reach)) {
+          let lo = 4.2, hi = reach;
+          for (let it = 0; it < 9; it++) {
+            const mid = (lo + hi) / 2;
+            if (mine(P.x + lx * sgn * mid, P.z + lz * sgn * mid, sc, mid)) lo = mid;
+            else hi = mid;
+          }
+          o = sgn * lo;
+        }
         const x = P.x + lx * o, z = P.z + lz * o;
         const h = this.height(x, z), d = this.roadDist;
         const hx = this.height(x + 1.5, z) - this.height(x - 1.5, z);
@@ -426,7 +469,7 @@ export class World {
   // ---------- scenery ----------
 
   _vegetation() {
-    const route = this.route, P = this._p, rand = rng(1909);
+    const route = this.route, P = this._p, rand = rng(1909), F = this.F, B = this.B, provence = route.meta.lowland === 'provence';
     const cone = (r, h, y) => new THREE.ConeGeometry(r, h, 7).translate(0, y, 0);
     const pine = merged([
       { geo: new THREE.CylinderGeometry(0.025, 0.035, 0.3, 5).translate(0, 0.15, 0), color: 0x5b4632 },
@@ -469,18 +512,18 @@ export class World {
           const r1 = rand(), r2 = rand(), r3 = rand(), r4 = rand();
           const h = this.height(x, z);
           if (this.roadDist < 6) continue;
-          const forest = smooth(470, 590, h) * (1 - smooth(1390, 1530, h));
-          const scree = smooth(1400, 1520, h);
-          if (h < 600 && forest < 0.3 && r1 < 0.3) {
-            // Provençal lowlands: cypresses and scattered oaks
-            const tall = r2 < 0.4, size = tall ? 8 + r3 * 6 : 5 + r3 * 4;
+          const forest = smooth(F[0], F[1], h) * (1 - smooth(F[2], F[3], h));
+          const scree = smooth(B[0], B[1], h);
+          if (h < Math.min(F[1] + 10, B[0]) && forest < 0.3 && r1 < (provence ? 0.3 : 0.14)) {
+            // lowlands: scattered trees (cypresses too in Provence)
+            const tall = provence && r2 < 0.4, size = tall ? 8 + r3 * 6 : 5 + r3 * 4;
             e.set(0, r4 * 6.28, 0);
             m.compose(v.set(x, h - 0.2, z), q.setFromEuler(e), sc.set(size, size, size));
             tint.setScalar(0.8 + r4 * 0.35);
             (tall ? cypresses : leafies).push({ m: m.clone(), c: tint.clone() });
           } else if (r1 < forest * 0.85) {
-            const broad = r2 < (h < 950 ? 0.55 : 0.18);
-            const size = (broad ? 6 + r3 * 5 : 7 + r3 * 8) * (1 - 0.45 * smooth(1300, 1520, h));
+            const broad = r2 < (h < F[1] + 360 ? 0.55 : 0.18);
+            const size = (broad ? 6 + r3 * 5 : 7 + r3 * 8) * (1 - 0.45 * smooth(F[2] - 90, F[3], h));
             e.set(0, r4 * 6.28, 0);
             m.compose(v.set(x, h - 0.2, z), q.setFromEuler(e), sc.set(size * (0.8 + r2 * 0.5), size, size * (0.8 + r2 * 0.5)));
             tint.setScalar(0.78 + r4 * 0.4);
@@ -514,12 +557,14 @@ export class World {
     };
 
     // Snow poles on the bare upper slopes
-    const chalet = route.landmarks[2].dist;
+    const meta = route.meta, sign = meta.sign, isVentoux = meta.id === 'ventoux';
+    let chalet = route.total;
+    for (let d = 0; d < route.total; d += 50) if (route.ele(d) >= this.B[0]) { chalet = d; break; }
     const poleGeo = merged([
       { geo: new THREE.CylinderGeometry(0.05, 0.05, 2.2, 6).translate(0, 1.1, 0), color: 0xf2c21a },
       { geo: new THREE.CylinderGeometry(0.052, 0.052, 0.5, 6).translate(0, 2.45, 0), color: 0x1a1a1a },
     ]);
-    const poleCount = Math.floor((route.total - chalet - 30) / 25);
+    const poleCount = Math.max(0, Math.floor((route.total - chalet - 30) / 25));
     const poles = new THREE.InstancedMesh(poleGeo, new THREE.MeshLambertMaterial({ vertexColors: true }), poleCount);
     const m = new THREE.Matrix4();
     for (let i = 0; i < poleCount; i++) {
@@ -548,12 +593,13 @@ export class World {
         ctx.fillStyle = '#1a1a1a';
         ctx.textAlign = 'center';
         ctx.font = '700 27px system-ui, sans-serif';
-        ctx.fillText('MONT VENTOUX', w / 2, 35);
+        ctx.font = `700 ${meta.name.length > 14 ? 21 : 27}px system-ui, sans-serif`;
+        ctx.fillText(meta.name.toUpperCase(), w / 2, 35);
         ctx.font = '700 32px system-ui, sans-serif';
-        ctx.fillText(`Sommet ${left.toFixed(1)} km`, w / 2, 90);
+        ctx.fillText(`${sign.top} ${left.toFixed(1)} km`, w / 2, 90);
         ctx.font = '500 24px system-ui, sans-serif';
-        ctx.fillText(`Altitude ${Math.round(route.ele(d))} m`, w / 2, 126);
-        ctx.fillText(`Pente ${next.toFixed(1)} %`, w / 2, 158);
+        ctx.fillText(`${sign.alt} ${Math.round(route.ele(d))} m`, w / 2, 126);
+        ctx.fillText(`${sign.grade} ${next.toFixed(1)} %`, w / 2, 158);
       });
       const g = new THREE.Group();
       g.add(new THREE.Mesh(postGeo, mPost), new THREE.Mesh(backGeo, mPost), new THREE.Mesh(boardGeo, new THREE.MeshBasicMaterial({ map: tex })));
@@ -588,8 +634,30 @@ export class World {
       g.add(banner);
       place(g, dist, 0);
     };
-    arch(30, 'DÉPART  ·  BÉDOIN', 0x2b6fd6);
-    arch(route.total - 6, 'SOMMET  ·  1909 m', 0xd63a2b);
+    const fit = (t) => (t.length > 24 ? t.slice(0, 24) : t);
+    arch(30, fit(`${sign.start}  ·  ${meta.start.toUpperCase()}`), 0x2b6fd6);
+    arch(route.total - 6, fit(`${sign.top.toUpperCase()}  ·  ${meta.topEle} m`), 0xd63a2b);
+
+    // Numbered hairpin signs, counting down to the top
+    route.hairpins.forEach((d, i) => {
+      const num = route.hairpins.length - i;
+      const tex = textTexture(256, 176, (ctx, w, h) => {
+        ctx.fillStyle = '#1d4f9c';
+        ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.font = '600 26px system-ui, sans-serif';
+        ctx.fillText(meta.hairpinWord || 'Virage', w / 2, 38);
+        ctx.font = '800 78px system-ui, sans-serif';
+        ctx.fillText(String(num), w / 2, 112);
+        ctx.font = '500 24px system-ui, sans-serif';
+        ctx.fillText(`${Math.round(route.ele(d))} m`, w / 2, 156);
+      });
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(postGeo, mPost), new THREE.Mesh(backGeo, mPost), new THREE.Mesh(boardGeo, new THREE.MeshBasicMaterial({ map: tex })));
+      place(g, Math.max(0, d - 35), 4.9, Math.PI);
+    });
+    if (!isVentoux) return;
 
     // Summit observatory with its red-and-white mast
     const tower = new THREE.Group();
@@ -708,8 +776,9 @@ export class World {
     const rx = P.x - lx * 1.5, rz = P.z - lz * 1.5;
     const tx = rx - P.tx * cam.back + lx * cam.side, tz = rz - P.tz * cam.back + lz * cam.side;
     let ty = P.y - slope * cam.back + cam.up;
-    const ground = this.height(tx, tz);
-    if (ty < ground + 1.2) ty = ground + 1.2;
+    // keep the camera out of the hillside, also on the way to the rider
+    const ground = Math.max(this.height(tx, tz), this.height((tx * 2 + rx) / 3, (tz * 2 + rz) / 3) - 1.5);
+    if (ty < ground + 2.2) ty = ground + 2.2;
     const lookX = rx + P.tx * cam.ahead, lookZ = rz + P.tz * cam.ahead;
     const lookY = P.y + slope * cam.ahead + 1.15;
 
