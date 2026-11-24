@@ -17,7 +17,20 @@ export async function loadRoute(url) {
 
 export class Route {
   constructor(data) {
-    const pts = data.route, n = pts.length;
+    let pts = data.route;
+    // Routes built through several waypoints sometimes dart into a side street
+    // and straight back out. Cut those out-and-back spurs.
+    if ((data.meta.kind || 'climb') !== 'climb') {
+      const kept = [];
+      for (let i = 0; i < pts.length; i++) {
+        kept.push(pts[i]);
+        for (let j = Math.min(pts.length - 1, i + 80); j >= i + 4; j--) {
+          if (Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]) < 6) { i = j; break; }
+        }
+      }
+      pts = kept;
+    }
+    const n = pts.length;
     this.name = data.name;
     this.sub = data.sub;
     const meta = (this.meta = data.meta);
@@ -102,6 +115,37 @@ export class Route {
       a.push(i);
     }
     this._nr = { d: 0, ele: 0, dist: 0 };
+
+    // Where a ride uses the same stretch of road twice (loops, out-and-back),
+    // both passes must be at the same height, or one would bury the other.
+    if (!climb) {
+      const RANGE = 18;
+      for (let pass = 0; pass < 3; pass++) {
+        const next = Float64Array.from(E);
+        for (let i = 0; i < n; i++) {
+          const cx = Math.floor(X[i] / this.cell), cz = Math.floor(Z[i] / this.cell);
+          let best = RANGE, bj = -1;
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dz = -1; dz <= 1; dz++) {
+              const arr = this.hash.get(this._key(cx + dx, cz + dz));
+              if (!arr) continue;
+              for (const j of arr) {
+                if (Math.abs(D[j] - D[i]) < 60) continue; // the same pass
+                const d = Math.hypot(X[j] - X[i], Z[j] - Z[i]);
+                if (d < best) { best = d; bj = j; }
+              }
+            }
+          }
+          if (bj >= 0) next[i] = E[i] + (E[bj] - E[i]) * 0.5 * (1 - best / RANGE);
+        }
+        E.set(next);
+      }
+      ascent = 0;
+      for (let i = 1; i < n; i++) if (E[i] > E[i - 1]) ascent += E[i] - E[i - 1];
+      this.ascent = ascent;
+      this.minEle = Math.min(...E);
+      this.maxEle = Math.max(...E);
+    }
 
     // where the road passes closest to a place (the last time, on a loop, if asked)
     const nearPlace = (l) => {

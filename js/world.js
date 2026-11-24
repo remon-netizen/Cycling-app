@@ -88,6 +88,8 @@ export class World {
     this.alpine = meta.high !== 'scree';
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.Fog(HORIZON, 500, 12000);
     this.camera = new THREE.PerspectiveCamera(58, 1, 1, 30000);
@@ -109,6 +111,7 @@ export class World {
     this._windFx();
 
     this.player = createRider({});
+    this._shadows(this.player.group);
     this.scene.add(this.player.group);
     this.bots = [];
     this.resize();
@@ -123,8 +126,14 @@ export class World {
     return this.cameraName;
   }
 
+  // everything in a model throws a shadow (name tags excepted)
+  _shadows(group) {
+    group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  }
+
   addBot(colors) {
     const r = createRider(colors);
+    this._shadows(r.group);
     this.scene.add(r.group);
     this.bots.push(r);
     return r;
@@ -133,6 +142,7 @@ export class World {
   // Another real rider, with their name floating above them.
   addRemote(name, colors) {
     const r = createRider(colors);
+    this._shadows(r.group);
     const tex = textTexture(256, 64, (ctx, w, h) => {
       ctx.fillStyle = 'rgba(14, 20, 32, 0.78)';
       ctx.beginPath();
@@ -255,7 +265,16 @@ export class World {
     const sun = (this.sun = new THREE.DirectionalLight(0xfff1d6, 2.6));
     this.sunDir = new THREE.Vector3(0.45, 0.62, 0.64).normalize();
     sun.position.copy(this.sunDir);
-    this.scene.add(sun);
+    // real shadows in a box that travels with the rider
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(4096, 4096);
+    const sc = sun.shadow.camera;
+    sc.left = sc.bottom = -55; sc.right = sc.top = 55; sc.near = 1; sc.far = 420;
+    sc.updateProjectionMatrix();
+    sun.shadow.bias = -0.0006;
+    sun.shadow.normalBias = 0.02;
+    sun.shadow.radius = 1.5;
+    this.scene.add(sun, sun.target);
   }
 
   _sky() {
@@ -352,12 +371,12 @@ export class World {
     const half = [4.2, 7, 12, 20, 32, 50, 75, 110];
     const OFF = [...half.map((v) => -v).reverse(), ...half];
     const cols = OFF.length + 2; // plus a skirt each side
-    const STEP = 10;
+    const STEP = 5; // same rows as the road surface, so the two cannot cross on steep bends
     const rows = Math.floor((route.total + 220) / STEP) + 2;
     // is the nearest bit of road to this point the bit we are building the strip for?
     const mine = (x, z, along, reach) => {
       const nr = route.nearest(x, z);
-      return !nr || Math.abs(nr.dist - along) <= reach * 1.5 + 30;
+      return !nr || Math.abs(nr.dist - along) <= 4 + reach * 0.15;
     };
     const pos = new Float32Array(rows * cols * 3), nor = new Float32Array(rows * cols * 3), col = new Float32Array(rows * cols * 3);
     let k = 0;
@@ -371,8 +390,8 @@ export class World {
         // each other's tarmac, so each strip stops halfway to the other leg.
         let o = OFF[Math.min(OFF.length - 1, Math.max(0, ci - 1))];
         const reach = Math.abs(o), sgn = Math.sign(o);
-        if (reach > 4.2 && !mine(P.x + lx * o, P.z + lz * o, sc, reach)) {
-          let lo = 4.2, hi = reach;
+        if (!mine(P.x + lx * o, P.z + lz * o, sc, reach)) {
+          let lo = 0.5, hi = reach;
           for (let it = 0; it < 9; it++) {
             const mid = (lo + hi) / 2;
             if (mine(P.x + lx * sgn * mid, P.z + lz * sgn * mid, sc, mid)) lo = mid;
@@ -385,7 +404,9 @@ export class World {
         const hx = this.height(x + 1.5, z) - this.height(x - 1.5, z);
         const hz = this.height(x, z + 1.5) - this.height(x, z - 1.5);
         const nl = Math.hypot(hx / 3, 1, hz / 3);
-        pos[k] = x; pos[k + 1] = skirt ? h - 45 : h; pos[k + 2] = z;
+        // under the tarmac the ground sits a little lower; the road's own shoulders hide the step
+        const under = Math.abs(o) <= 4.2 ? 0.3 : 0;
+        pos[k] = x; pos[k + 1] = skirt ? h - 45 : h - under; pos[k + 2] = z;
         nor[k] = -hx / 3 / nl; nor[k + 1] = 1 / nl; nor[k + 2] = -hz / 3 / nl;
         this.terrainColor(x, z, h, d, c);
         col[k] = c.r; col[k + 1] = c.g; col[k + 2] = c.b;
@@ -406,11 +427,29 @@ export class World {
     geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
-    this._chunked(geo, rows - 1, (cols - 1) * 6, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    // Mottle the ground so grass and scree are not one flat colour up close.
+    const ground = new THREE.MeshLambertMaterial({ vertexColors: true });
+    ground.onBeforeCompile = (s) => {
+      s.vertexShader = s.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vGround;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGround = position;');
+      s.fragmentShader = s.fragmentShader
+        .replace('#include <common>', `#include <common>
+          varying vec3 vGround;
+          float gHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float gNoise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(gHash(i), gHash(i + vec2(1.0, 0.0)), f.x), mix(gHash(i + vec2(0.0, 1.0)), gHash(i + vec2(1.0, 1.0)), f.x), f.y); }`)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          float gFine = gNoise(vGround.xz * 1.7) * 0.6 + gNoise(vGround.xz * 6.0) * 0.4;
+          float gBroad = gNoise(vGround.xz * 0.11);
+          float gFade = 1.0 - smoothstep(60.0, 220.0, length(vGround - cameraPosition));
+          diffuseColor.rgb *= 1.0 + ((gFine - 0.5) * 0.34 * gFade + (gBroad - 0.5) * 0.16);`);
+    };
+    this._chunked(geo, rows - 1, (cols - 1) * 6, ground, 120);
   }
 
   // Split a strip mesh into draw groups along the road so off-screen parts are culled.
-  _chunked(geo, rowCount, indicesPerRow, material, rowsPerChunk = 60) {
+  _chunked(geo, rowCount, indicesPerRow, material, rowsPerChunk = 60, kind = 'ground') {
     const pos = geo.attributes.position, index = geo.index;
     for (let r = 0; r < rowCount; r += rowsPerChunk) {
       const start = r * indicesPerRow, count = Math.min(rowsPerChunk, rowCount - r) * indicesPerRow;
@@ -422,28 +461,37 @@ export class World {
       for (let i = start; i < start + count; i++) box.expandByPoint(v.fromBufferAttribute(pos, index.getX(i)));
       g.boundingSphere = box.getBoundingSphere(new THREE.Sphere());
       const mesh = new THREE.Mesh(g, material);
+      mesh.userData.kind = kind;
+      mesh.receiveShadow = true;
       this.scene.add(mesh);
     }
   }
 
   _road() {
     const route = this.route, P = this._p;
-    const STEP = 5, HALF = 3.2;
+    // four vertices a row: shoulder, edge, edge, shoulder. The shoulders slope
+    // down to the ground so the tarmac never floats.
+    const STEP = 5, HALF = 3.2, SHOULDER = 4.3, DROP = 0.42;
     const rows = Math.ceil(route.total / STEP) + 1;
-    const pos = new Float32Array(rows * 6), uv = new Float32Array(rows * 4), nor = new Float32Array(rows * 6);
+    const pos = new Float32Array(rows * 12), uv = new Float32Array(rows * 8), nor = new Float32Array(rows * 12);
     for (let r = 0; r < rows; r++) {
       const s = Math.min(r * STEP, route.total);
       route.at(s, P);
-      const lx = P.tz, lz = -P.tx;
-      pos.set([P.x - lx * HALF, P.y + 0.04, P.z - lz * HALF, P.x + lx * HALF, P.y + 0.04, P.z + lz * HALF], r * 6);
-      nor.set([0, 1, 0, 0, 1, 0], r * 6);
-      uv.set([0, s / 12, 1, s / 12], r * 4);
+      const lx = P.tz, lz = -P.tx, y = P.y + 0.04;
+      pos.set([
+        P.x - lx * SHOULDER, y - DROP, P.z - lz * SHOULDER, P.x - lx * HALF, y, P.z - lz * HALF,
+        P.x + lx * HALF, y, P.z + lz * HALF, P.x + lx * SHOULDER, y - DROP, P.z + lz * SHOULDER,
+      ], r * 12);
+      nor.set([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], r * 12);
+      uv.set([-0.12, s / 12, 0, s / 12, 1, s / 12, 1.12, s / 12], r * 8);
     }
-    const idx = new Uint32Array((rows - 1) * 6);
+    const idx = new Uint32Array((rows - 1) * 18);
     for (let r = 0, q = 0; r < rows - 1; r++) {
-      const a = r * 2, b = a + 1, cc = a + 2, d = a + 3;
-      idx[q++] = a; idx[q++] = cc; idx[q++] = b;
-      idx[q++] = b; idx[q++] = cc; idx[q++] = d;
+      for (let c = 0; c < 3; c++) {
+        const a = r * 4 + c, b = a + 1, cc = a + 4, d = a + 5;
+        idx[q++] = a; idx[q++] = cc; idx[q++] = b;
+        idx[q++] = b; idx[q++] = cc; idx[q++] = d;
+      }
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -467,7 +515,7 @@ export class World {
     tex.wrapT = THREE.RepeatWrapping;
     tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
     const mat = new THREE.MeshLambertMaterial({ map: tex, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
-    this._chunked(geo, rows - 1, 6, mat, 120);
+    this._chunked(geo, rows - 1, 18, mat, 120, 'road');
   }
 
   // ---------- scenery ----------
@@ -501,6 +549,7 @@ export class World {
         mesh.setColorAt(i, it.c);
       });
       mesh.computeBoundingSphere();
+      mesh.castShadow = true;
       this.scene.add(mesh);
     };
 
@@ -799,6 +848,8 @@ export class World {
     this.sky.position.copy(this._camPos);
     this.plain.position.x = this._camPos.x;
     this.plain.position.z = this._camPos.z;
+    this.sun.target.position.set(P.x, P.y, P.z);
+    this.sun.position.set(P.x + this.sunDir.x * 200, P.y + this.sunDir.y * 200, P.z + this.sunDir.z * 200);
     this._updateWindFx(dt, wind);
   }
 

@@ -755,8 +755,8 @@ setInterval(() => {
 const ROUTES = [
   { id: 'amstel', name: 'Along the Amstel', type: 'Flat', km: 24, up: 36 },
   { id: 'afsluitdijk', name: 'Afsluitdijk', type: 'Flat', km: 34, up: 0 },
-  { id: 'posbank', name: 'Posbank', type: 'Rolling', km: 16, up: 145 },
-  { id: 'limburg', name: 'Limburg hills', type: 'Hilly', km: 32, up: 368 },
+  { id: 'posbank', name: 'Posbank', type: 'Rolling', km: 15, up: 145 },
+  { id: 'limburg', name: 'Limburg hills', type: 'Hilly', km: 30, up: 366 },
   { id: 'alpe-dhuez', name: "Alpe d'Huez", type: 'Mountain', km: 13, up: 1118 },
   { id: 'galibier', name: 'Col du Galibier', type: 'Mountain', km: 18, up: 1237 },
   { id: 'tourmalet', name: 'Col du Tourmalet', type: 'Mountain', km: 19, up: 1397 },
@@ -861,4 +861,4 @@ async function init() {
   }
 }
 init();
-window.sommet = { net, ride, get routeId() { return routeId; } }; // handy in the browser console
+window.sommet = { net, ride, get routeId() { return routeId; }, get world() { return world; }, get route() { return route; } }; // handy in the browser console

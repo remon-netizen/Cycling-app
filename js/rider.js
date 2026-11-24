@@ -93,14 +93,6 @@ export function createRider({ jersey = 0xe8412c, shorts = 0x1c1f26, helmet = 0xf
     })(),
   }));
 
-  const shadow = new THREE.Mesh(
-    new THREE.CircleGeometry(0.75, 16),
-    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 })
-  );
-  shadow.rotation.x = -Math.PI / 2;
-  shadow.scale.set(0.55, 1.5, 1);
-  shadow.position.y = 0.02;
-  group.add(shadow);
 
   const foot = V(0, 0, 0), knee = V(0, 0, 0), dir = V(0, 0, 0), perp = V(0, 0, 0), axle = V(0, 0, 0);
 

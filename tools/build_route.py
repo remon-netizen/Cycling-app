@@ -97,7 +97,7 @@ def build(rid):
     if '--meta' in sys.argv:  # only refresh the descriptive part
         d = json.load(open(out)); d['meta'] = dict(meta, id=rid)
         json.dump(d, open(out, 'w'), separators=(',', ':'), ensure_ascii=False); return
-    r = get('https://router.project-osrm.org/route/v1/driving/%s?overview=full&geometries=geojson' % coords_arg)
+    r = get('https://router.project-osrm.org/route/v1/driving/%s?overview=full&geometries=geojson&continue_straight=true' % coords_arg)
     coords = r['routes'][0]['geometry']['coordinates']
     lons = [c[0] for c in coords]; lats = [c[1] for c in coords]
     lon0 = (min(lons) + max(lons)) / 2; lat0 = (min(lats) + max(lats)) / 2
