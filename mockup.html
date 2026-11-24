@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sommet · graphics mock-up</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1420; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #fff; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .note { position: fixed; left: 16px; bottom: 14px; padding: 8px 14px; border-radius: 999px; font-size: 12.5px; background: rgba(14, 20, 32, 0.6); backdrop-filter: blur(10px); }
+  .note b { color: #ffc155; }
+  #err { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 30px; text-align: center; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="note"><b>Graphics mock-up</b> · a test scene, not a real route · <span id="fps"></span></div>
+<div id="err"></div>
+<script type="module">
+// A stand-alone look test: what the app could look like with textured ground,
+// real grass, fuller trees, a physical sky and light bloom. Everything here is
+// generated in code; no downloaded 3D models.
+import * as THREE from 'three';
+import { Sky } from 'three/addons/objects/Sky.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { createRider } from './js/rider.js';
+
+const params = new URLSearchParams(location.search);
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.6;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1, 0.3, 30000);
+
+// ---------- helpers ----------
+const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+const lerp = (a, b, t) => a + (b - a) * t;
+function hash2(ix, iz) { let h = Math.imul(ix, 374761393) + Math.imul(iz, 668265263); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; }
+function vnoise(x, z) { const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz, u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+  return lerp(lerp(hash2(ix, iz), hash2(ix + 1, iz), u), lerp(hash2(ix, iz + 1), hash2(ix + 1, iz + 1), u), v); }
+const fbm = (x, z, o = 4) => { let a = 0.5, s = 0, f = 1; for (let i = 0; i < o; i++) { s += vnoise(x * f, z * f) * a; a *= 0.5; f *= 2.03; } return s; };
+function rng(seed) { return () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const rand = rng(42);
+
+// ---------- the road and the land ----------
+const LEN = 900; // metres of road, ridden in a loop
+const roadX = (z) => 46 * Math.sin(z / 105) + 18 * Math.sin(z / 41 + 1.3);
+const roadY = (z) => 0.062 * z + 3.5 * Math.sin(z / 160);
+const roadDX = (z) => (roadX(z + 0.5) - roadX(z - 0.5));
+function nearestRoad(x, z) { // good enough: the road mostly runs along z
+  let best = 1e9, bz = z;
+  for (let dz = -30; dz <= 30; dz += 3) { const d = Math.hypot(x - roadX(z + dz), dz); if (d < best) { best = d; bz = z + dz; } }
+  return { d: best, z: bz };
+}
+function ground(x, z) {
+  const nr = nearestRoad(x, z), side = x - roadX(nr.z);
+  // a hillside: up to the left, down into a valley on the right, with knolls
+  const hill = side < 0 ? -side * 0.42 + Math.pow(Math.max(0, -side - 60), 1.25) * 0.5 : -side * 0.3 - Math.pow(Math.max(0, side - 30), 1.15) * 0.42;
+  const wild = roadY(nr.z) + hill + (fbm(x / 70, z / 70) - 0.5) * 34 * smooth(12, 90, nr.d) + (fbm(x / 9, z / 9, 3) - 0.5) * 1.6 * smooth(6, 20, nr.d);
+  return lerp(roadY(nr.z) - 0.35, wild, smooth(4.6, 26, nr.d));
+}
+
+// ---------- textures made in code ----------
+function canvasTex(size, draw, repeat = 1, srgb = true) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = size; draw(cv.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(cv); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat, repeat);
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); return t;
+}
+function normalFromHeight(size, heightFn, strength, repeat) {
+  return canvasTex(size, (ctx, n) => {
+    const img = ctx.createImageData(n, n), H = new Float32Array(n * n);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) H[y * n + x] = heightFn(x, y, n);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const l = H[y * n + ((x + n - 1) % n)], r = H[y * n + ((x + 1) % n)], u = H[((y + n - 1) % n) * n + x], d = H[((y + 1) % n) * n + x];
+      const nx = (l - r) * strength, ny = (u - d) * strength, nl = Math.hypot(nx, ny, 1), k = (y * n + x) * 4;
+      img.data[k] = (nx / nl * 0.5 + 0.5) * 255; img.data[k + 1] = (ny / nl * 0.5 + 0.5) * 255; img.data[k + 2] = (1 / nl * 0.5 + 0.5) * 255; img.data[k + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  }, repeat, false);
+}
+const tile = (x, y, n, f) => fbm((x / n) * f, (y / n) * f, 4); // not perfectly seamless, hidden by variation
+const asphalt = canvasTex(1024, (ctx, n) => {
+  const img = ctx.createImageData(n, n);
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const k = (y * n + x) * 4, g = 104 + (hash2(x, y) - 0.5) * 34 + (tile(x, y, n, 6) - 0.5) * 30 + (hash2(x >> 1, y >> 1) > 0.93 ? 30 : 0);
+    img.data[k] = g * 0.98; img.data[k + 1] = g; img.data[k + 2] = g * 1.04; img.data[k + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  // worn wheel tracks, patches and cracks
+  for (const cx of [0.3, 0.7]) { const gr = ctx.createLinearGradient((cx - 0.09) * n, 0, (cx + 0.09) * n, 0); gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.5, 'rgba(0,0,0,0.12)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = gr; ctx.fillRect(0, 0, n, n); }
+  ctx.strokeStyle = 'rgba(15,15,18,0.55)'; ctx.lineWidth = 1.4;
+  for (let i = 0; i < 9; i++) { let x = rand() * n, y = rand() * n; ctx.beginPath(); ctx.moveTo(x, y); for (let j = 0; j < 14; j++) { x += (rand() - 0.5) * 34; y += rand() * 30; ctx.lineTo(x, y); } ctx.stroke(); }
+  // paint: edge lines and a dashed centre line, slightly worn
+  ctx.fillStyle = 'rgba(232,230,220,0.92)'; ctx.fillRect(n * 0.045, 0, n * 0.022, n); ctx.fillRect(n * 0.933, 0, n * 0.022, n); ctx.fillRect(n * 0.492, 0, n * 0.016, n * 0.42);
+  for (let i = 0; i < 2600; i++) { ctx.fillStyle = 'rgba(60,60,64,0.5)'; const x = [0.045, 0.933, 0.492][i % 3] * n + rand() * n * 0.022; ctx.fillRect(x, rand() * n, 2, 2 + rand() * 4); }
+});
+const asphaltN = normalFromHeight(512, (x, y) => hash2(x, y) * 0.6 + hash2(x >> 1, y >> 1) * 0.4, 1.6, 1);
+const grassTex = canvasTex(1024, (ctx, n) => {
+  const img = ctx.createImageData(n, n);
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const k = (y * n + x) * 4, a = tile(x, y, n, 9), b = hash2(x, y), dry = smooth(0.52, 0.7, tile(x + 300, y + 90, n, 4));
+    img.data[k] = lerp(58, 132, dry) + a * 46 + b * 22; img.data[k + 1] = lerp(96, 128, dry) + a * 52 + b * 26; img.data[k + 2] = lerp(34, 66, dry) + a * 24 + b * 10; img.data[k + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}, 1);
+const grassN = normalFromHeight(512, (x, y, n) => tile(x, y, n, 22) * 0.7 + hash2(x, y) * 0.5, 2.2, 1);
+
+// ---------- terrain ----------
+{
+  const W = 520, D = LEN + 500, step = 2.5, nx = Math.round(W / step) + 1, nz = Math.round(D / step) + 1;
+  const pos = new Float32Array(nx * nz * 3), col = new Float32Array(nx * nz * 3), uv = new Float32Array(nx * nz * 2), c = new THREE.Color();
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+    const z = -250 + j * step, x = -W / 2 + i * step + roadX(z) * 0.6, k = j * nx + i, h = ground(x, z), nr = nearestRoad(x, z);
+    pos.set([x, h, z], k * 3); uv.set([x / 7, z / 7], k * 2);
+    const slope = Math.abs(ground(x + 2, z) - ground(x - 2, z)) / 4, rock = smooth(0.75, 1.25, slope), macro = fbm(x / 55, z / 55, 3);
+    c.setRGB(0.78 + macro * 0.5, 0.82 + macro * 0.42, 0.72 + macro * 0.3); // tint over the grass texture
+    c.lerp(new THREE.Color(1.05, 0.95, 0.82), rock * 0.85); // bare earth and rock on steep ground
+    c.lerp(new THREE.Color(1.0, 0.9, 0.74), (1 - smooth(3.6, 7.5, nr.d)) * 0.9); // gravel verge
+    col.set([c.r, c.g, c.b], k * 3);
+  }
+  const idx = [];
+  for (let j = 0; j < nz - 1; j++) for (let i = 0; i < nx - 1; i++) { const a = j * nx + i, b = a + 1, d = a + nx, e = d + 1; idx.push(a, d, b, b, d, e); }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3)); geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  geo.setIndex(idx); geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: grassTex, normalMap: grassN, normalScale: new THREE.Vector2(0.9, 0.9), vertexColors: true, roughness: 0.96, metalness: 0 }));
+  mesh.receiveShadow = true; scene.add(mesh);
+}
+
+// ---------- road, with shoulders ----------
+{
+  const step = 2, rows = Math.round((LEN + 440) / step) + 1, pos = [], uv = [], idx = [];
+  for (let r = 0; r < rows; r++) {
+    const z = -220 + r * step, tx = roadDX(z), l = Math.hypot(tx, 1), nxp = 1 / l, nzp = -tx / l, x = roadX(z), y = roadY(z);
+    for (const [o, dy, u] of [[-4.4, -0.38, -0.1], [-3.3, 0, 0], [3.3, 0, 1], [4.4, -0.38, 1.1]]) { pos.push(x + nxp * o, y + dy, z + nzp * o); uv.push(u, z / 9); }
+    if (r < rows - 1) for (let cI = 0; cI < 3; cI++) { const a = r * 4 + cI; idx.push(a, a + 4, a + 1, a + 1, a + 4, a + 5); }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); geo.setIndex(idx); geo.computeVertexNormals();
+  asphalt.wrapS = THREE.ClampToEdgeWrapping;
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: asphalt, normalMap: asphaltN, normalScale: new THREE.Vector2(0.5, 0.5), roughness: 0.82, metalness: 0, side: THREE.DoubleSide }));
+  mesh.receiveShadow = true; scene.add(mesh);
+}
+
+// ---------- guard rail on the valley side ----------
+{
+  const posts = [], rails = [];
+  for (let z = -200; z < LEN + 200; z += 4) {
+    const tx = roadDX(z), l = Math.hypot(tx, 1), x = roadX(z) + (1 / l) * 4.75, zz = z + (-tx / l) * 4.75, m = new THREE.Matrix4();
+    m.makeRotationY(Math.atan2(tx, 1)); m.setPosition(x, roadY(z) - 0.3, zz); posts.push(m.clone()); rails.push(m.clone());
+  }
+  const steel = new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.42, metalness: 0.85 });
+  const p = new THREE.InstancedMesh(new THREE.BoxGeometry(0.09, 0.95, 0.09).translate(0, 0.47, 0), steel, posts.length);
+  const r = new THREE.InstancedMesh(new THREE.BoxGeometry(0.05, 0.3, 4.06).translate(0, 0.78, 0), steel, rails.length);
+  posts.forEach((m, i) => { p.setMatrixAt(i, m); r.setMatrixAt(i, rails[i]); });
+  p.castShadow = r.castShadow = true; scene.add(p, r);
+}
+
+// ---------- grass: tens of thousands of blades that sway ----------
+const windTime = { value: 0 };
+{
+  const blade = new THREE.PlaneGeometry(0.05, 1, 1, 4).translate(0, 0.5, 0);
+  const pa = blade.attributes.position, bc = new Float32Array(pa.count * 3);
+  for (let i = 0; i < pa.count; i++) { const t = pa.getY(i); pa.setX(i, pa.getX(i) * (1 - t * 0.85)); pa.setZ(i, t * t * 0.22); bc.set([lerp(0.2, 0.5, t), lerp(0.34, 0.66, t), lerp(0.1, 0.24, t)], i * 3); }
+  blade.setAttribute('color', new THREE.BufferAttribute(bc, 3)); blade.computeVertexNormals();
+  const COUNT = +params.get('grass') || 260000;
+  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  mat.onBeforeCompile = (s) => {
+    s.uniforms.uTime = windTime;
+    s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\nuniform float uTime;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vec4 wp = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+        float sway = sin(uTime * 1.7 + wp.x * 0.35 + wp.z * 0.27) * 0.5 + sin(uTime * 3.1 + wp.x * 0.9) * 0.2;
+        transformed.x += sway * 0.16 * position.y * position.y; transformed.z += sway * 0.07 * position.y * position.y;`);
+  };
+  const mesh = new THREE.InstancedMesh(blade, mat, COUNT), m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), s = new THREE.Vector3(), p = new THREE.Vector3(), c = new THREE.Color();
+  let n = 0;
+  for (let tries = 0; n < COUNT && tries < COUNT * 4; tries++) {
+    const z = -40 + rand() * (LEN + 80), side = (rand() < 0.5 ? -1 : 1), off = 4.5 + Math.pow(rand(), 2.4) * 48, x = roadX(z) + side * off;
+    const patch = fbm(x / 6, z / 6, 2); if (patch < 0.38 && off > 7) continue; // clumps and bare patches
+    const h = ground(x, z), tall = 0.14 + rand() * 0.26 + patch * 0.3;
+    e.set((rand() - 0.5) * 0.5, rand() * 6.28, (rand() - 0.5) * 0.5); s.set(0.8 + rand() * 0.9, tall, 1);
+    m.compose(p.set(x, h - 0.03, z), q.setFromEuler(e), s); mesh.setMatrixAt(n, m);
+    const dry = smooth(0.5, 0.75, fbm(x / 30, z / 30, 2)); c.setRGB(lerp(0.85, 1.5, dry) * (0.8 + rand() * 0.4), lerp(1.0, 1.15, dry) * (0.8 + rand() * 0.4), lerp(0.9, 0.7, dry)); mesh.setColorAt(n, c); n++;
+  }
+  mesh.count = n; mesh.receiveShadow = true; mesh.frustumCulled = false; scene.add(mesh);
+}
+
+// ---------- trees: layered firs and round broadleaves, built from noisy shapes ----------
+function merge(parts) {
+  const pos = [], nor = [], col = [];
+  for (const { geo, color, tip } of parts) {
+    const g = geo.index ? geo.toNonIndexed() : geo; g.computeVertexNormals();
+    const a = new THREE.Color(color), b = new THREE.Color(tip ?? color); g.computeBoundingBox(); const y0 = g.boundingBox.min.y, y1 = g.boundingBox.max.y;
+    for (let i = 0; i < g.attributes.position.count; i++) {
+      pos.push(g.attributes.position.getX(i), g.attributes.position.getY(i), g.attributes.position.getZ(i));
+      nor.push(g.attributes.normal.getX(i), g.attributes.normal.getY(i), g.attributes.normal.getZ(i));
+      const t = (g.attributes.position.getY(i) - y0) / Math.max(1e-6, y1 - y0), c = a.clone().lerp(b, t); col.push(c.r, c.g, c.b);
+    }
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); out.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3)); out.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  return out;
+}
+function jitter(geo, amount, seed) { const r = rng(seed), p = geo.attributes.position, seen = new Map();
+  for (let i = 0; i < p.count; i++) { const key = `${p.getX(i).toFixed(3)},${p.getY(i).toFixed(3)},${p.getZ(i).toFixed(3)}`; let d = seen.get(key);
+    if (!d) seen.set(key, (d = [(r() - 0.5) * amount, (r() - 0.5) * amount * 0.6, (r() - 0.5) * amount])); p.setXYZ(i, p.getX(i) + d[0], p.getY(i) + d[1], p.getZ(i) + d[2]); }
+  return geo; }
+function fir(seed) {
+  const parts = [{ geo: new THREE.CylinderGeometry(0.035, 0.06, 0.34, 7).translate(0, 0.17, 0), color: 0x4a3626 }], tiers = 9;
+  for (let i = 0; i < tiers; i++) { const t = i / (tiers - 1), rad = lerp(0.36, 0.06, Math.pow(t, 0.85)), hgt = lerp(0.3, 0.16, t);
+    parts.push({ geo: jitter(new THREE.ConeGeometry(rad, hgt, 11, 2, true).translate(0, 0.2 + t * 0.78 + hgt / 2, 0), 0.05 * (1 - t * 0.6), seed + i), color: 0x16331f, tip: 0x3f6f3c }); }
+  return merge(parts);
+}
+function broadleaf(seed) {
+  const r = rng(seed), parts = [{ geo: new THREE.CylinderGeometry(0.04, 0.07, 0.5, 7).translate(0, 0.25, 0), color: 0x54402e }];
+  for (let i = 0; i < 7; i++) { const a = r() * 6.28, d = r() * 0.2, y = 0.55 + r() * 0.3, rad = 0.2 + r() * 0.13;
+    parts.push({ geo: jitter(new THREE.IcosahedronGeometry(rad, 2).translate(Math.cos(a) * d, y, Math.sin(a) * d), 0.05, seed + i * 7), color: 0x2f5a26, tip: 0x86ac4d }); }
+  return merge(parts);
+}
+{
+  const leafMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0, flatShading: true, side: THREE.DoubleSide });
+  const kinds = [fir(1), fir(20), fir(40), broadleaf(60), broadleaf(80)].map((g) => ({ g, m: [] }));
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), s = new THREE.Vector3(), p = new THREE.Vector3();
+  for (let i = 0; i < 5200; i++) {
+    const z = -230 + rand() * (LEN + 460), side = rand() < 0.55 ? -1 : 1, off = 7 + Math.pow(rand(), 1.3) * 240, x = roadX(z) + side * off;
+    const wood = fbm(x / 80 + 4, z / 80, 3); if (wood < 0.44) continue; // forest in patches, meadows between
+    const k = kinds[rand() < 0.72 ? Math.floor(rand() * 3) : 3 + Math.floor(rand() * 2)], size = (k === kinds[3] || k === kinds[4] ? 7 : 11) * (0.7 + rand() * 0.8);
+    e.set((rand() - 0.5) * 0.06, rand() * 6.28, (rand() - 0.5) * 0.06); s.set(size * (0.85 + rand() * 0.3), size, size * (0.85 + rand() * 0.3));
+    m.compose(p.set(x, ground(x, z) - 0.25, z), q.setFromEuler(e), s); k.m.push(m.clone());
+  }
+  for (const k of kinds) { const mesh = new THREE.InstancedMesh(k.g, leafMat, k.m.length); k.m.forEach((mm, i) => mesh.setMatrixAt(i, mm)); mesh.castShadow = mesh.receiveShadow = true; mesh.frustumCulled = false; scene.add(mesh); }
+}
+
+// ---------- rocks ----------
+{
+  const g = jitter(new THREE.IcosahedronGeometry(1, 2), 0.32, 9); g.computeVertexNormals();
+  const mesh = new THREE.InstancedMesh(g, new THREE.MeshStandardMaterial({ color: 0x8d8a84, roughness: 0.95, flatShading: true }), 220);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), s = new THREE.Vector3(), p = new THREE.Vector3();
+  for (let i = 0; i < 220; i++) { const z = -100 + rand() * (LEN + 200), x = roadX(z) + (rand() < 0.6 ? -1 : 1) * (6 + rand() * 90), sz = 0.25 + Math.pow(rand(), 3) * 3.2;
+    e.set(rand() * 3, rand() * 6, rand() * 3); s.set(sz, sz * 0.62, sz * 0.9); m.compose(p.set(x, ground(x, z) + sz * 0.1, z), q.setFromEuler(e), s); mesh.setMatrixAt(i, m); }
+  mesh.castShadow = mesh.receiveShadow = true; scene.add(mesh);
+}
+
+// ---------- distant mountains ----------
+{
+  const far = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true });
+  for (const [dist, height, seed] of [[2600, 900, 3], [4800, 1700, 11], [8000, 2600, 23]]) {
+    const geo = new THREE.PlaneGeometry(dist * 5, dist * 1.2, 90, 22).rotateX(-Math.PI / 2), p = geo.attributes.position, col = new Float32Array(p.count * 3), c = new THREE.Color();
+    for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i), ridge = 1 - Math.abs(z) / (dist * 0.6);
+      const h = Math.max(0, ridge) * height * (0.35 + fbm(x / (dist * 0.33) + seed, z / (dist * 0.33), 5) * 1.25); p.setY(i, h - 60);
+      const snow = smooth(height * 0.92, height * 1.22, h + fbm(x / 300, z / 300, 2) * 220); c.setRGB(0.16, 0.25, 0.15).lerp(new THREE.Color(0.36, 0.35, 0.33), smooth(height * 0.45, height * 0.85, h)).lerp(new THREE.Color(0.9, 0.92, 0.96), snow); col.set([c.r, c.g, c.b], i * 3); }
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3)); geo.computeVertexNormals();
+    for (const [rot, ox, oz] of [[0, 0, LEN / 2 + dist], [Math.PI / 2, -dist, LEN / 2], [-Math.PI / 2, dist * 1.1, LEN / 2]]) { const mesh = new THREE.Mesh(geo, far); mesh.rotation.y = rot; mesh.position.set(ox, 0, oz); scene.add(mesh); }
+  }
+}
+
+// ---------- sky, sun, haze, clouds ----------
+const sunDir = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 34), THREE.MathUtils.degToRad(-128));
+const sky = new Sky(); sky.scale.setScalar(25000);
+Object.assign(sky.material.uniforms, {}); sky.material.uniforms.turbidity.value = 3.2; sky.material.uniforms.rayleigh.value = 1.5; sky.material.uniforms.mieCoefficient.value = 0.004; sky.material.uniforms.mieDirectionalG.value = 0.82; sky.material.uniforms.sunPosition.value.copy(sunDir);
+scene.add(sky);
+scene.fog = new THREE.FogExp2(0x9fbbd8, 0.000085);
+const sun = new THREE.DirectionalLight(0xfff0d8, 3.4); sun.castShadow = true; sun.shadow.mapSize.set(4096, 4096);
+Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 70, bottom: -70, near: 1, far: 500 }); sun.shadow.camera.updateProjectionMatrix(); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.03;
+scene.add(sun, sun.target, new THREE.HemisphereLight(0xc4dcff, 0x6b6248, 2.3));
+{
+  const mat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide, uniforms: { uTime: windTime },
+    vertexShader: 'varying vec2 vP; void main(){ vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `varying vec2 vP; uniform float uTime;
+      float h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float n(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f); return mix(mix(h(i), h(i+vec2(1,0)), f.x), mix(h(i+vec2(0,1)), h(i+vec2(1,1)), f.x), f.y); }
+      float fbm(vec2 p){ float a = 0.5, s = 0.0; for (int i = 0; i < 5; i++) { s += n(p) * a; p *= 2.02; a *= 0.5; } return s; }
+      void main(){ vec2 p = vP / 2600.0 + vec2(uTime * 0.004, 0.0); float d = fbm(p) + fbm(p * 2.7) * 0.35; float a = smoothstep(0.72, 1.02, d);
+        float edge = 1.0 - smoothstep(9000.0, 16000.0, length(vP)); vec3 c = mix(vec3(0.78, 0.82, 0.9), vec3(1.0), smoothstep(0.72, 1.15, d));
+        gl_FragColor = vec4(c, a * 0.9 * edge); }` });
+  const clouds = new THREE.Mesh(new THREE.PlaneGeometry(34000, 34000).rotateX(-Math.PI / 2), mat); clouds.position.y = 2400; clouds.renderOrder = 2; scene.add(clouds);
+}
+
+// ---------- riders ----------
+const riders = [{ off: 0, lat: -1.4, look: { gender: 'woman', jersey: 0x19a7a0 } }, { off: 9, lat: -0.5, look: { jersey: 0xe8412c } }, { off: 34, lat: -1.8, look: { jersey: 0xf2c21a, frame: 0xc93a2e } }]
+  .map((r) => { const m = createRider(r.look); m.group.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.material = new THREE.MeshStandardMaterial({ color: o.material.color, roughness: 0.55, metalness: 0.05 }); } }); scene.add(m.group); return { ...r, m }; });
+
+// ---------- post-processing ----------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.16, 0.7, 0.92); composer.addPass(bloom);
+composer.addPass(new OutputPass());
+function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); composer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+
+// ---------- ride along the road, forever ----------
+const SPEED = +params.get('speed') || 4.6, START = +params.get('at') || 60, camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
+let last = performance.now(), t = 0, frames = 0, fpsAt = last, first = true;
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now; t += dt; windTime.value = t;
+  const z0 = START + ((t * SPEED) % (LEN - 200));
+  for (const r of riders) {
+    const z = z0 + r.off, tx = roadDX(z), l = Math.hypot(tx, 1), g = r.m.group;
+    g.position.set(roadX(z) + (1 / l) * r.lat, roadY(z) + 0.02, z + (-tx / l) * r.lat);
+    g.rotation.set(-Math.atan(roadY(z + 0.5) - roadY(z - 0.5)), Math.atan2(tx, 1), 0, 'YXZ'); r.m.pose(t * 8.6 + r.off, (z / 0.34));
+  }
+  const me = riders[0].m.group.position, tx = roadDX(z0), l = Math.hypot(tx, 1);
+  const want = new THREE.Vector3(me.x - (tx / l) * 6.6 + 0.9, me.y + 2.35, me.z - (1 / l) * 6.6), look = new THREE.Vector3(me.x + (tx / l) * 9, me.y + 1.25, me.z + (1 / l) * 9);
+  const k = first ? 1 : 1 - Math.exp(-dt * 4); first = false; camPos.lerp(want, k); camLook.lerp(look, k); camera.position.copy(camPos); camera.lookAt(camLook);
+  sun.target.position.copy(me); sun.position.copy(me).addScaledVector(sunDir, 220);
+  composer.render(dt);
+  frames++; if (now - fpsAt > 1000) { document.getElementById('fps').textContent = `${Math.round((frames * 1000) / (now - fpsAt))} frames a second`; frames = 0; fpsAt = now; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.addEventListener('error', (e) => { const el = document.getElementById('err'); el.style.display = 'flex'; el.textContent = 'The mock-up could not start: ' + e.message; });
+</script>
+</body>
+</html>
