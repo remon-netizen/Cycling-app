@@ -83,7 +83,8 @@ export class World {
     this.route = route;
     const meta = route.meta;
     this.F = meta.forest || [1e8, 1e8 + 1, 1e8 + 2, 1e8 + 3]; // forest: starts, full, thins, gone
-    this.B = meta.bare; // open rock: from, to
+    this.B = meta.bare || [1e8, 1e8 + 1]; // open rock: from, to
+    this.water = !!meta.water; // sea-level ground is drawn as water
     this.alpine = meta.high !== 'scree';
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -185,12 +186,14 @@ export class World {
     const g = this.route.grid;
     const H = new Float32Array(g.h.length);
     let base = Infinity;
-    for (const v of g.h) if (v > 0 && v < base) base = v;
+    const nd = g.nodata ?? 0, ok = (v) => (nd === 0 ? v > 0 : v > nd); // older files used 0 for "no data"
+    for (const v of g.h) if (ok(v) && v < base) base = v;
+    if (this.water) base = 0;
     for (let j = 0; j < g.ny; j++) {
       for (let i = 0; i < g.nx; i++) {
         const k = j * g.nx + i;
         const edge = Math.min(i, g.nx - 1 - i, j, g.ny - 1 - j) * g.dx;
-        const h = g.h[k] > 0 ? this.route.scaleEle(g.h[k]) : base;
+        const h = ok(g.h[k]) ? this.route.scaleEle(g.h[k]) : base;
         H[k] = lerp(base, h, smooth(0, 1500, edge));
       }
     }
@@ -238,6 +241,7 @@ export class World {
     out.lerp(this._c2.copy(COL.forestA).lerp(COL.forestB, n2), forest);
     out.lerp(this._c2.copy(al ? COL.alpineA : COL.screeA).lerp(al ? COL.alpineB : COL.screeB, n2), scree);
     if (al) out.lerp(COL.snow, smooth(2450, 2750, hj) * 0.75);
+    if (this.water && h < 0.6 && d > 14) out.setRGB(0.2, 0.42, 0.56).multiplyScalar(0.9 + n2 * 0.2);
     if (d < 95) {
       const fade = 1 - smooth(60, 95, d);
       out.multiplyScalar(1 + (vnoise(x / 5, z / 5) - 0.5) * 0.22 * fade);
@@ -511,7 +515,7 @@ export class World {
           const x = px + lx * o, z = pz + lz * o;
           const r1 = rand(), r2 = rand(), r3 = rand(), r4 = rand();
           const h = this.height(x, z);
-          if (this.roadDist < 6) continue;
+          if (this.roadDist < 6 || this.water) continue; // no trees on a sea dike
           const forest = smooth(F[0], F[1], h) * (1 - smooth(F[2], F[3], h));
           const scree = smooth(B[0], B[1], h);
           if (h < Math.min(F[1] + 10, B[0]) && forest < 0.3 && r1 < (provence ? 0.3 : 0.14)) {
@@ -636,10 +640,10 @@ export class World {
     };
     const fit = (t) => (t.length > 24 ? t.slice(0, 24) : t);
     arch(30, fit(`${sign.start}  ·  ${meta.start.toUpperCase()}`), 0x2b6fd6);
-    arch(route.total - 6, fit(`${sign.top.toUpperCase()}  ·  ${meta.topEle} m`), 0xd63a2b);
+    arch(route.total - 6, fit(route.climb ? `${sign.top.toUpperCase()}  ·  ${meta.topEle} m` : `${sign.top.toUpperCase()}  ·  ${meta.top.toUpperCase()}`), 0xd63a2b);
 
     // Numbered hairpin signs, counting down to the top
-    route.hairpins.forEach((d, i) => {
+    (route.climb ? route.hairpins : []).forEach((d, i) => {
       const num = route.hairpins.length - i;
       const tex = textTexture(256, 176, (ctx, w, h) => {
         ctx.fillStyle = '#1d4f9c';

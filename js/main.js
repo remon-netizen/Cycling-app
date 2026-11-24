@@ -27,6 +27,7 @@ for (const [key, el] of Object.entries(fields)) {
   });
 }
 const totalMass = () => settings.weight + settings.bike;
+const toGo = () => (route.climb && ride.endDist >= route.total ? 'to the top' : 'to go');
 
 // ---------- state ----------
 const trainer = new Trainer();
@@ -40,7 +41,7 @@ const history = new History(net);
 
 const ride = {
   active: false, finished: false, startDist: 0, startDate: null,
-  dist: 0, v: 0, crank: 0, power: 0, cadence: 0, hr: 0, shownPower: 0,
+  dist: 0, endDist: Infinity, v: 0, crank: 0, power: 0, cadence: 0, hr: 0, shownPower: 0,
   moving: 0, wall: 0, climbed: 0, energy: 0, powerSum: 0, hrSum: 0, hrTime: 0, cadSum: 0, cadTime: 0,
   samples: [], demoPower: Math.max(0, parseFloat(params.get('demo')) || 200), eta: Infinity, recent: [],
   nextLandmark: 0, sentGrade: null, sentAt: 0, secAcc: 0, etaAcc: 0, windWork: 0, draftWork: 0, braking: false, wasForest: null, trainerTime: 0, saved: false,
@@ -136,7 +137,9 @@ const keepAwake = () => navigator.wakeLock?.request('screen').catch(() => {});
 document.addEventListener('visibilitychange', () => !document.hidden && ride.active && keepAwake());
 
 // ---------- ride ----------
-function startRide(startDist) {
+function startRide(startDist, length = +$('i-length').value || 0) {
+  // a chosen ride length ends the ride before the end of the route
+  ride.endDist = length > 0 ? Math.min(route.total, startDist + length) : route.total;
   Object.assign(ride, {
     active: true, finished: false, startDist, startDate: new Date(), dist: startDist, v: 0,
     moving: 0, wall: 0, climbed: 0, energy: 0, powerSum: 0, hrSum: 0, hrTime: 0, cadSum: 0, cadTime: 0,
@@ -152,7 +155,7 @@ function startRide(startDist) {
   $('hud').hidden = false;
   deviceUi();
   keepAwake();
-  toast(`${route.name} · ${((route.total - startDist) / 1000).toFixed(1)} km to the top. Bon courage!`);
+  toast(`${route.name} · ${((ride.endDist - startDist) / 1000).toFixed(1)} km ${toGo()}. ${route.climb ? 'Bon courage!' : 'Have a good ride!'}`);
 }
 
 function readInputs() {
@@ -195,7 +198,7 @@ function simulate(dt) {
     ride.windWork += (alone - drag(ride.v, eleBefore, { temp: wind.temp }, cda)) * ride.v * h;
     ride.draftWork += (alone - drag(ride.v, eleBefore, wind, cda)) * ride.v * h;
     ride.wall += h;
-    ride.dist = Math.min(route.total, ride.dist + ride.v * h);
+    ride.dist = Math.min(ride.endDist, ride.dist + ride.v * h);
     const gain = route.ele(ride.dist) - eleBefore;
     if (gain > 0) ride.climbed += gain;
     if (ride.v > 0.3 || ride.power > 0) {
@@ -226,7 +229,7 @@ function simulate(dt) {
     ride.secAcc -= 1;
     everySecond();
   }
-  if (!ride.finished && ride.dist >= route.total) {
+  if (!ride.finished && ride.dist >= ride.endDist) {
     ride.finished = true;
     trainer.setGrade(0, CRR);
     showSummary(true);
@@ -258,7 +261,7 @@ function everySecond() {
   if (ride.etaAcc >= 5) {
     ride.etaAcc = 0;
     const avg = ride.recent.reduce((a, b) => a + b, 0) / ride.recent.length;
-    ride.eta = estimateTime(route, ride.dist, avg, totalMass(), weather);
+    ride.eta = estimateTime(route, ride.dist, avg, totalMass(), weather, ride.endDist);
   }
 
   // leaving or entering the shelter of the trees
@@ -275,7 +278,7 @@ function everySecond() {
 
   const lm = route.landmarks[ride.nextLandmark];
   if (lm && ride.dist >= lm.dist - 5 && ride.nextLandmark < route.landmarks.length - 1) {
-    toast(`${lm.name} · ${Math.round(route.ele(lm.dist))} m · ${((route.total - lm.dist) / 1000).toFixed(1)} km to go`, 8000);
+    toast(`${lm.name} · ${Math.round(route.ele(lm.dist))} m · ${(Math.max(0, ride.endDist - lm.dist) / 1000).toFixed(1)} km to go`, 8000);
     ride.nextLandmark++;
   }
 }
@@ -283,10 +286,13 @@ function everySecond() {
 function showSummary(finished) {
   const t = ride.moving || 1, km = (ride.dist - ride.startDist) / 1000;
   const avgP = ride.powerSum / t;
-  $('sum-title').textContent = finished ? `${route.meta.sign.top} ! ${route.meta.topEle} m` : 'Ride paused';
+  const whole = ride.endDist >= route.total;
+  $('sum-title').textContent = !finished ? 'Ride paused' : route.climb && whole ? `${route.meta.sign.top} ! ${route.meta.topEle} m` : 'Finished!';
   $('sum-sub').textContent = finished
-    ? `You climbed ${route.name}${ride.startDist > 0 ? ' (partial ascent)' : ` from ${route.meta.start}`}. Chapeau!`
-    : `${((route.total - ride.dist) / 1000).toFixed(1)} km short of the summit`;
+    ? route.climb && whole
+      ? `You climbed ${route.name}${ride.startDist > 0 ? ' (partial ascent)' : ` from ${route.meta.start}`}. Chapeau!`
+      : `You rode ${((ride.dist - ride.startDist) / 1000).toFixed(1)} km on ${route.name}. Nicely done!`
+    : `${((ride.endDist - ride.dist) / 1000).toFixed(1)} km left`;
   const cells = [
     [fmtTime(ride.moving), 'time'],
     [km.toFixed(2), 'km'],
@@ -351,6 +357,7 @@ async function saveRide() {
   if (ride.saved || !worthSaving()) return;
   ride.saved = true;
   const rec = buildRecord(ride, routeId, settings.weight);
+  rec.finished = ride.finished && ride.endDist >= route.total;
   const note = $('sum-note');
   note.textContent = 'Saving your ride…';
   try {
@@ -525,7 +532,7 @@ function startCountdown(seconds, startDist) {
 function goClicked() {
   const startDist = route.landmarks[+$('i-start').value].dist;
   if (net.room && [...net.peers.values()].some((p) => !p.riding) && !othersRiding()) {
-    net.send('start', { id: net.user.id, in: 5, startDist, route: routeId });
+    net.send('start', { id: net.user.id, in: 5, startDist, route: routeId, length: +$('i-length').value || 0 });
     startCountdown(5, startDist);
   } else startRide(startDist);
 }
@@ -540,6 +547,8 @@ net.onstart = async (p) => {
   }
   if (ride.active || countdown) return;
   const left = Math.min(10, +p.in || 5) - (performance.now() - began) / 1000;
+  const len = Math.max(0, +p.length || 0);
+  if ([...$('i-length').options].some((o) => +o.value === len)) $('i-length').value = len;
   startCountdown(Math.max(1, left), Math.min(route.total - 50, Math.max(0, +p.startDist)));
 };
 net.onpeers = mpUi;
@@ -661,7 +670,7 @@ function updateHud(dt) {
   hudAcc = 0;
   const g = route.grade(ride.dist);
   $('h-dist').textContent = ((ride.dist - ride.startDist) / 1000).toFixed(2);
-  $('h-togo').textContent = `${((route.total - ride.dist) / 1000).toFixed(1)} km to the top`;
+  $('h-togo').textContent = `${((ride.endDist - ride.dist) / 1000).toFixed(1)} km ${toGo()}`;
   $('h-ele').textContent = Math.round(route.ele(ride.dist));
   $('h-climb').textContent = Math.round(ride.climbed);
   $('h-time').textContent = fmtTime(ride.moving);
@@ -676,7 +685,7 @@ function updateHud(dt) {
   $('h-avg').textContent = ride.moving > 0 ? Math.round(ride.powerSum / ride.moving) : 0;
   $('h-grade').textContent = (Math.abs(g) < 0.05 ? 0 : g).toFixed(1);
   $('h-grade-box').style.background = gradeColor(g);
-  const span = Math.min(1000, route.total - ride.dist);
+  const span = Math.min(1000, ride.endDist - ride.dist);
   $('h-next').textContent = ride.braking ? 'braking for the bend' : span > 100 ? `next ${span >= 1000 ? 'km' : Math.round(span) + ' m'} ${route.grade(ride.dist + span / 2, span).toFixed(1)}%` : 'almost there';
   $('h-wind').textContent = Math.round(wind.speed * 3.6);
   $('h-wind-label').textContent = windName(wind);
@@ -735,13 +744,25 @@ setInterval(() => {
 }, 500);
 
 // ---------- routes ----------
+// km and metres of climbing are only for the picker; the real numbers come from the route file
 const ROUTES = [
-  { id: 'ventoux', name: 'Mont Ventoux' },
-  { id: 'alpe-dhuez', name: "Alpe d'Huez" },
-  { id: 'galibier', name: 'Col du Galibier' },
-  { id: 'tourmalet', name: 'Col du Tourmalet' },
-  { id: 'stelvio', name: 'Passo dello Stelvio' },
+  { id: 'amstel', name: 'Along the Amstel', type: 'Flat', km: 24, up: 36 },
+  { id: 'afsluitdijk', name: 'Afsluitdijk', type: 'Flat', km: 34, up: 0 },
+  { id: 'posbank', name: 'Posbank', type: 'Rolling', km: 16, up: 145 },
+  { id: 'limburg', name: 'Limburg hills', type: 'Hilly', km: 32, up: 368 },
+  { id: 'alpe-dhuez', name: "Alpe d'Huez", type: 'Mountain', km: 13, up: 1118 },
+  { id: 'galibier', name: 'Col du Galibier', type: 'Mountain', km: 18, up: 1237 },
+  { id: 'tourmalet', name: 'Col du Tourmalet', type: 'Mountain', km: 19, up: 1397 },
+  { id: 'ventoux', name: 'Mont Ventoux', type: 'Mountain', km: 21, up: 1597 },
+  { id: 'stelvio', name: 'Passo dello Stelvio', type: 'Mountain', km: 24, up: 1853 },
 ];
+const TYPES = { Flat: 'Flat · easy spinning', Rolling: 'Rolling · moderate hills', Hilly: 'Hilly · short steep climbs', Mountain: 'Mountain · one long climb' };
+function lengthOptions() {
+  const left = route.total - route.landmarks[+$('i-start').value || 0].dist;
+  $('i-length').innerHTML =
+    `<option value="0">Whole route · ${(left / 1000).toFixed(1)} km</option>` +
+    [5, 10, 15, 20, 25, 30, 40].filter((k) => k * 1000 < left - 1500).map((k) => `<option value="${k * 1000}">${k} km</option>`).join('');
+}
 const routeName = (id) => ROUTES.find((r) => r.id === id)?.name || id;
 let routeId = null, routeLoading = null;
 
@@ -768,14 +789,18 @@ async function setRoute(id) {
   localStorage.setItem('sommet.settings', JSON.stringify(settings));
   $('i-route').value = id;
   const avg = ((route.E[route.n - 1] - route.E[0]) / route.total) * 100;
+  let steep = 0;
+  for (let d = 250; d < route.total; d += 100) steep = Math.max(steep, route.grade(d, 500));
+  $('h-eta-label').textContent = route.climb ? 'to the top' : 'to go';
   $('rc-title').textContent = $('h-route').textContent = route.name;
   $('rc-sub').textContent = route.meta.sub;
   document.title = `Sommet · ${route.name}`;
-  $('rc-facts').textContent = `${(route.total / 1000).toFixed(1)} km  ·  ${Math.round(route.ascent)} m ↑  ·  ${avg.toFixed(1)}% avg`;
+  $('rc-facts').textContent = `${(route.total / 1000).toFixed(1)} km  ·  ${Math.round(route.ascent)} m ↑  ·  ${route.climb ? `${avg.toFixed(1)}% avg` : `steepest 500 m ${steep.toFixed(1)}%`}`;
   $('i-start').innerHTML = route.landmarks
     .slice(0, -1)
     .map((l, i) => `<option value="${i}">${esc(l.name)} · ${((route.total - l.dist) / 1000).toFixed(1)} km</option>`)
     .join('');
+  lengthOptions();
   new RouteProfile($('rc-profile'), route, false).draw(route.total);
   await new Promise((r) => setTimeout(r, 30));
 
@@ -803,7 +828,10 @@ async function init() {
     $('s-foot').className = 'foot err';
     $('s-foot').textContent = 'This browser has no Web Bluetooth, so the trainer cannot connect. Open this page in Chrome or Edge. Demo mode still works.';
   }
-  $('i-route').innerHTML = ROUTES.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+  $('i-route').innerHTML = Object.keys(TYPES)
+    .map((t) => `<optgroup label="${TYPES[t]}">${ROUTES.filter((r) => r.type === t).map((r) => `<option value="${r.id}">${esc(r.name)} · ${r.km} km · ${r.up} m↑</option>`).join('')}</optgroup>`)
+    .join('');
+  $('i-start').addEventListener('change', lengthOptions);
   $('i-route').addEventListener('change', () => chooseRoute($('i-route').value));
   if (params.get('wx')) settings.weather = $('i-weather').value = params.get('wx');
   if (!(await chooseRoute(params.get('route') || settings.route || 'ventoux'))) return;
@@ -820,7 +848,7 @@ async function init() {
   // dev helpers: ?autostart=1&km=16&demo=250&cam=2&route=galibier
   if (params.get('autostart')) {
     for (let i = 0; i < (+params.get('cam') || 0); i++) $('b-cam').click();
-    startRide(Math.min(route.total - 50, (+params.get('km') || 0) * 1000));
+    startRide(Math.min(route.total - 50, (+params.get('km') || 0) * 1000), (+params.get('len') || 0) * 1000);
     ride.v = 4;
     for (let i = 0; i < (+params.get('ff') || 0); i++) simulate(1);
   }

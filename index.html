@@ -20,7 +20,7 @@
     </div>
     <div class="row">
       <div class="stat small"><span class="v" id="h-time">0:00</span><span class="u">time</span></div>
-      <div class="stat small"><span class="v" id="h-eta">–</span><span class="u">to the top</span></div>
+      <div class="stat small"><span class="v" id="h-eta">–</span><span class="u" id="h-eta-label">to the top</span></div>
     </div>
     <div class="riders" id="h-riders" hidden></div>
   </section>
@@ -83,7 +83,7 @@
   <div class="card">
     <header>
       <div class="logo">SOMMET</div>
-      <div class="tag">Ride real climbs on your smart trainer</div>
+      <div class="tag">Ride real roads on your smart trainer</div>
     </header>
 
     <div class="route-card">
@@ -112,6 +112,7 @@
         <label>Gradient feel <span><input id="i-diff" type="number" min="0" max="100" step="5"> %</span></label>
         <label>Route <span><select id="i-route"></select></span></label>
         <label>Start at <span><select id="i-start"></select></span></label>
+        <label>Ride length <span><select id="i-length"></select></span></label>
         <label>Weather <span><select id="i-weather">
           <option value="live">Live, as it is now</option>
           <option value="mistral">Mistral day</option>

@@ -10,6 +10,7 @@ import json, math, os, subprocess, sys, time
 
 FR = {'top': 'Sommet', 'alt': 'Altitude', 'grade': 'Pente', 'start': 'DÉPART'}
 IT = {'top': 'Cima', 'alt': 'Altitudine', 'grade': 'Pendenza', 'start': 'PARTENZA'}
+NL = {'top': 'Finish', 'alt': 'Hoogte', 'grade': 'Helling', 'start': 'START'}
 # coords: "lon,lat;lon,lat" start;finish. forest: [starts, full, thins, gone] in metres
 # of altitude (None = no forest). bare: [from, to] where the ground becomes open rock.
 ROUTES = {
@@ -34,6 +35,29 @@ ROUTES = {
         maxSlope=0.14, climbFrom=0, sign=IT, hairpinWord='Tornante',
         landmarks=[{'name': 'Gomagoi', 'ele': 1267}, {'name': 'Trafoi', 'ele': 1543}, {'name': 'Franzenshöhe', 'ele': 2188}]),
 }
+
+# Rides that are not one long climb. kind: flat | rolling | hilly. Landmarks are
+# given by position and snapped to the road. dx = terrain grid spacing in metres.
+ROUTES.update({
+    'amstel': dict(kind='flat', name='Along the Amstel', sub='Amsterdam to Uithoorn · river and polders', start='Amsterdam', top='Uithoorn',
+        coords='4.9120,52.3410;4.9135,52.2950;4.8850,52.2560;4.8300,52.2420', forest=None, bare=None, high='alpine', lowland='alpine',
+        maxSlope=0.06, smooth=9, dx=300, margin=2500, sign=NL,
+        landmarks=[{'name': 'Ouderkerk', 'lat': 52.2950, 'lon': 4.9135}, {'name': 'Nes aan de Amstel', 'lat': 52.2560, 'lon': 4.8850}]),
+    'afsluitdijk': dict(kind='flat', name='Afsluitdijk', sub='Den Oever to Friesland · 34 km of sea and wind', start='Den Oever', top='Friesland',
+        coords='5.0445,52.9360;5.3940,53.1110', forest=None, bare=None, high='alpine', lowland='alpine', water=True, exposure=0.95, fillEle=6,
+        maxSlope=0.04, smooth=12, dx=300, margin=2500, sign=NL,
+        landmarks=[{'name': 'Breezanddijk', 'lat': 53.0190, 'lon': 5.2040}, {'name': 'Kornwerderzand', 'lat': 53.0740, 'lon': 5.3350}]),
+    'posbank': dict(kind='rolling', name='Posbank', sub='Velp loop over the Veluwezoom · forest and heath', start='Velp', top='Velp',
+        coords='5.9760,52.0010;5.9640,52.0100;6.0206,52.0283;6.0290,52.0070;5.9760,52.0010', forest=[12, 22, 78, 95], bare=None, high='alpine', lowland='alpine',
+        maxSlope=0.12, smooth=9, dx=200, margin=2500, sign=NL,
+        landmarks=[{'name': 'Rozendaal', 'lat': 52.0100, 'lon': 5.9640}, {'name': 'Posbank', 'lat': 52.0283, 'lon': 6.0206}, {'name': 'Rheden', 'lat': 52.0070, 'lon': 6.0290}]),
+    'limburg': dict(kind='hilly', name='Limburg hills', sub='Valkenburg loop · Eyserbosweg and a Cauberg finish', start='Valkenburg', top='Cauberg',
+        coords='5.8330,50.8650;5.8260,50.8440;5.8890,50.8150;5.9330,50.8260;5.9230,50.8400;5.8960,50.8330;5.8700,50.8540;5.8330,50.8650;5.8120,50.8555',
+        forest=None, bare=None, high='alpine', lowland='alpine', maxSlope=0.17, smooth=8, dx=200, margin=2500, sign=NL,
+        landmarks=[{'name': 'Sibbe', 'lat': 50.8440, 'lon': 5.8260}, {'name': 'Gulpen', 'lat': 50.8150, 'lon': 5.8890}, {'name': 'Eys', 'lat': 50.8260, 'lon': 5.9330},
+                   {'name': 'Eyserbosweg', 'lat': 50.8400, 'lon': 5.9230}, {'name': 'Wijlre', 'lat': 50.8330, 'lon': 5.8960}, {'name': 'Foot of the Cauberg', 'lat': 50.8650, 'lon': 5.8330, 'last': True}]),
+})
+for _r in ROUTES.values(): _r.setdefault('kind', 'climb')
 
 def get(url):
     for attempt in range(8):
@@ -67,7 +91,8 @@ def gauss(vals, sigma):
     return out
 
 def build(rid):
-    meta = dict(ROUTES[rid]); coords_arg = meta.pop('coords')
+    meta = dict(ROUTES[rid]); coords_arg = meta.pop('coords'); fill = meta.pop('fillEle', None)
+    M = float(meta.pop('margin', 3000)); DX = float(meta.pop('dx', 150))
     out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', rid + '.json')
     if '--meta' in sys.argv:  # only refresh the descriptive part
         d = json.load(open(out)); d['meta'] = dict(meta, id=rid)
@@ -95,7 +120,8 @@ def build(rid):
     print(rid, 'road', round(total), 'm', flush=True)
     e = elev([unproj(*rs[i]) for i in idx]); last = None
     for i in range(len(e)):
-        if e[i] is None: e[i] = last
+        if e[i] is None: e[i] = fill if fill is not None else last
+        elif fill is not None: e[i] = max(e[i], fill)
         last = e[i]
     ele = []
     for i in range(len(rs)):
@@ -104,16 +130,15 @@ def build(rid):
         ele.append(e[k] + (e[k + 1] - e[k]) * t)
     raw0, raw1 = ele[0], ele[-1]
     ele = gauss(ele, 8)
-    M = 3000.0; DX = 150.0
     x0 = min(p[0] for p in rs) - M; x1 = max(p[0] for p in rs) + M
     y0 = min(p[1] for p in rs) - M; y1 = max(p[1] for p in rs) + M
     nx = int((x1 - x0) / DX) + 1; ny = int((y1 - y0) / DX) + 1
     print(rid, 'grid', nx, ny, flush=True)
-    gh = [0 if v is None else v for v in elev([unproj(x0 + i * DX, y0 + j * DX) for j in range(ny) for i in range(nx)])]
+    gh = [-999 if v is None else v for v in elev([unproj(x0 + i * DX, y0 + j * DX) for j in range(ny) for i in range(nx)])]
     json.dump({
         'name': meta['name'], 'sub': meta['sub'], 'meta': dict(meta, id=rid), 'step': STEP, 'lat0': lat0, 'lon0': lon0,
         'route': [[round(p[0], 1), round(p[1], 1), round(z, 1)] for p, z in zip(rs, ele)],
-        'grid': {'x0': round(x0, 1), 'y0': round(y0, 1), 'dx': DX, 'nx': nx, 'ny': ny, 'h': [round(v) for v in gh]},
+        'grid': {'x0': round(x0, 1), 'y0': round(y0, 1), 'dx': DX, 'nx': nx, 'ny': ny, 'nodata': -999, 'h': [round(v) for v in gh]},
     }, open(out, 'w'), separators=(',', ':'), ensure_ascii=False)
     print(rid, 'done', len(rs), 'pts', round(total), 'm', round(raw0), round(raw1), flush=True)
 

@@ -89,12 +89,12 @@ export function airAsGrade(v, mass, ele, air, gradePct, power) {
 
 // Seconds to ride from `from` to the end of the route at constant power.
 // `weather` (optional) adds the average wind along the way.
-export function estimateTime(route, from, power, mass, weather) {
+export function estimateTime(route, from, power, mass, weather, to = route.total) {
   if (power < 20) return Infinity;
   let t = 0;
   const seg = 100, air = { head: 0, side: 0, temp: 15, draft: 0 };
-  for (let d = from; d < route.total; d += seg) {
-    const len = Math.min(seg, route.total - d);
+  for (let d = from; d < to; d += seg) {
+    const len = Math.min(seg, to - d);
     if (weather) weather.at(d + len / 2, undefined, air);
     const v = Math.min(steadySpeed(power, route.grade(d + len / 2, len), mass, route.ele(d), air), route.speedLimit(d + len / 2));
     if (v < 0.3) return Infinity;

@@ -21,7 +21,7 @@ export class Route {
     this.name = data.name;
     this.sub = data.sub;
     const meta = (this.meta = data.meta);
-    const SUMMIT_ELEVATION = meta.topEle;
+    const climb = (this.climb = (meta.kind || 'climb') === 'climb');
     this.lat0 = data.lat0;
     this.lon0 = data.lon0;
     this.grid = data.grid;
@@ -42,7 +42,7 @@ export class Route {
     // 100-300 m scale (they would give fake 20% ramps). Smooth them, then
     // limit the slope to what the real road has.
     const raw = pts.map((p) => p[2]);
-    const SIGMA = 18, R = SIGMA * 3; // samples (~10 m each)
+    const SIGMA = meta.smooth || 18, R = SIGMA * 3; // samples (~10 m each)
     const sample = (i) => (i < 0 ? 2 * raw[0] - raw[-i] : i >= n ? 2 * raw[n - 1] - raw[2 * (n - 1) - i] : raw[i]);
     const sm = new Float64Array(n);
     for (let i = 0; i < n; i++) {
@@ -58,14 +58,15 @@ export class Route {
     raw[0] = sm[0];
     for (let i = 1; i < n; i++) {
       const ds = D[i] - D[i - 1];
-      const minSlope = D[i] < climbFrom ? -0.04 : 0.005;
+      const minSlope = !climb ? -MAX_SLOPE : D[i] < climbFrom ? -0.04 : 0.005;
       raw[i] = raw[i - 1] + Math.min(MAX_SLOPE, Math.max(minSlope, (sm[i] - sm[i - 1]) / ds)) * ds;
     }
 
     // The DEM underestimates the summit a little; rescale so the top is right.
     const e0 = raw[0];
-    const k = (SUMMIT_ELEVATION - e0) / (raw[n - 1] - e0);
-    const kGrid = (SUMMIT_ELEVATION - e0) / (pts[n - 1][2] - e0);
+    // (only for climbs: other rides keep the heights as measured)
+    const k = climb ? (meta.topEle - e0) / (raw[n - 1] - e0) : 1;
+    const kGrid = climb ? (meta.topEle - e0) / (pts[n - 1][2] - e0) : 1;
     this.scaleEle = (h) => e0 + (h - e0) * kGrid;
 
     let ascent = 0;
@@ -102,6 +103,17 @@ export class Route {
     }
     this._nr = { d: 0, ele: 0, dist: 0 };
 
+    // where the road passes closest to a place (the last time, on a loop, if asked)
+    const nearPlace = (l) => {
+      const px = (l.lon - data.lon0) * 111320 * Math.cos((data.lat0 * Math.PI) / 180), pz = -(l.lat - data.lat0) * 111132;
+      let best = Infinity, bi = 0;
+      for (let i = 0; i < n; i++) {
+        const d = Math.hypot(X[i] - px, Z[i] - pz);
+        if (d < best) { best = d; bi = i; }
+      }
+      if (l.last) for (let i = n - 1; i > bi; i--) if (Math.hypot(X[i] - px, Z[i] - pz) < best + 60) { bi = i; break; }
+      return D[bi];
+    };
     const firstAbove = (ele) => {
       for (let i = 0; i < n; i++) if (E[i] >= ele) return D[i];
       return this.total;
@@ -110,8 +122,8 @@ export class Route {
       { name: meta.start, dist: 0 },
       ...(meta.landmarks || []).map((l) => ({
         name: l.name,
-        dist: l.steepStart ? this._forestStart() : l.fromTop ? this.total - l.fromTop : l.km ? l.km * 1000 : firstAbove(l.ele),
-      })),
+        dist: l.steepStart ? this._forestStart() : l.fromTop ? this.total - l.fromTop : l.km ? l.km * 1000 : l.lat ? nearPlace(l) : firstAbove(l.ele),
+      })).filter((l) => l.dist > 300 && l.dist < this.total - 300),
       { name: meta.top, dist: this.total },
     ].sort((a, b) => a.dist - b.dist);
 

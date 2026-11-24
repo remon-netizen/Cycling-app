@@ -37,11 +37,13 @@ export class Weather {
     this.route = route;
     const meta = route.meta;
     this.F = meta.forest;
-    this.B = meta.bare;
+    this.B = meta.bare || [1e8, 1e8 + 1];
     // foot of the climb, a point halfway up, and the top
-    const midEle = meta.midEle || (route.ele(0) + meta.topEle) / 2;
     let mid = route.total / 2;
-    for (let d = 0; d < route.total; d += 50) if (route.ele(d) >= midEle) { mid = d; break; }
+    if (route.climb) {
+      const midEle = meta.midEle || (route.ele(0) + meta.topEle) / 2;
+      for (let d = 0; d < route.total; d += 50) if (route.ele(d) >= midEle) { mid = d; break; }
+    }
     this.stations = [0, mid, route.total].map((dist) => {
       const p = route.at(dist, {});
       return { dist, ele: route.ele(dist), ...route.latLon(p.x, p.z) };
@@ -58,7 +60,7 @@ export class Weather {
     this.obs = obs.map((o, i) => {
       const r = (o.dir * Math.PI) / 180;
       // u = towards east, n = towards north (the way the air moves)
-      return { ...o, ele: this.stations[i].ele, u: -Math.sin(r) * o.speed, n: -Math.cos(r) * o.speed, gustRatio: o.speed > 0.5 ? Math.max(1, o.gust / o.speed) : 1 };
+      return { ...o, ele: this.stations[i].ele, dist: this.stations[i].dist, u: -Math.sin(r) * o.speed, n: -Math.cos(r) * o.speed, gustRatio: o.speed > 0.5 ? Math.max(1, o.gust / o.speed) : 1 };
     });
   }
 
@@ -114,6 +116,7 @@ export class Weather {
 
   // How much of the wind reaches the road at this height.
   exposure(ele) {
+    if (this.route.meta.exposure) return this.route.meta.exposure; // e.g. a dike in open water
     const F = this.F, B = this.B;
     const forest = F ? smooth(F[0], F[1], ele) * (1 - smooth(F[2], F[3], ele)) : 0;
     const bare = smooth(B[0], B[1], ele);
@@ -124,10 +127,12 @@ export class Weather {
   }
 
   // Forecast conditions at a height, blended between the three stations.
-  _blend(ele, out) {
+  _blend(ele, out, dist = 0) {
     const o = this.obs;
-    const i = ele < o[1].ele ? 0 : 1;
-    const t = Math.min(1, Math.max(0, (ele - o[i].ele) / (o[i + 1].ele - o[i].ele)));
+    // climbs: by height. other rides: by how far along the road you are
+    const key = this.route.climb ? 'ele' : 'dist', at = this.route.climb ? ele : dist;
+    const i = at < o[1][key] ? 0 : 1;
+    const t = Math.min(1, Math.max(0, (at - o[i][key]) / (o[i + 1][key] - o[i][key] || 1)));
     for (const k of ['u', 'n', 'gustRatio', 'temp', 'cloud']) out[k] = lerp(o[i][k], o[i + 1][k], t);
     return out;
   }
@@ -146,7 +151,7 @@ export class Weather {
   at(dist, time, out = {}) {
     const P = this.route.at(dist, this._p);
     const ele = this.route.ele(dist);
-    this._blend(ele, out);
+    this._blend(ele, out, dist);
     const exposure = this.exposure(ele);
     let k = RIDER_HEIGHT * exposure;
     if (time !== undefined) k *= 1 + (out.gustRatio - 1) * this._gust(time + dist / 40);
