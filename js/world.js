@@ -43,6 +43,14 @@ const COL = {
 };
 const HORIZON = 0xcfdfec;
 const SUN = 3.5; // sunlight strength on a clear day
+// Graphics levels. ratio: sharpness cap, shadow: shadow map size (0 = none),
+// grass: blades per 30 m of road, range: how far trees and rocks are drawn (m).
+export const QUALITY = {
+// detail: within this distance trees are drawn in full, beyond it as simple shapes.
+  low: { ratio: 1, shadow: 0, grass: 0, range: 1200, detail: 0, near: 'simple', far: 'simple' },
+  medium: { ratio: 1.25, shadow: 2048, grass: 3000, range: 3000, detail: 400, near: 'mid', far: 'simple' },
+  high: { ratio: 2, shadow: 4096, grass: 8500, range: 9000, detail: 700, near: 'full', far: 'mid' },
+};
 
 function merged(parts) {
   const pos = [], nor = [], col = [];
@@ -93,13 +101,25 @@ function jitter(geo, amount, seed) {
   }
   return geo;
 }
-function firTree(seed) {
-  const parts = [{ geo: new THREE.CylinderGeometry(0.03, 0.05, 0.3, 7).translate(0, 0.15, 0), color: 0x4a3626 }], tiers = 8;
+function firTree(seed, tiers = 8, sides = 10, rings = 2) {
+  const parts = [{ geo: new THREE.CylinderGeometry(0.03, 0.05, 0.3, 7).translate(0, 0.15, 0), color: 0x4a3626 }];
   for (let i = 0; i < tiers; i++) {
     const t = i / (tiers - 1), rad = lerp(0.3, 0.05, Math.pow(t, 0.85)), hgt = lerp(0.26, 0.14, t);
-    parts.push({ geo: jitter(new THREE.ConeGeometry(rad, hgt, 10, 2, true).translate(0, 0.17 + t * 0.68 + hgt / 2, 0), 0.045 * (1 - t * 0.6), seed + i), color: 0x16331f, tip: 0x3f6f3c });
+    parts.push({ geo: jitter(new THREE.ConeGeometry(rad, hgt * (8 / tiers), sides, rings, true).translate(0, 0.17 + t * 0.68 + hgt / 2, 0), 0.045 * (1 - t * 0.6), seed + i), color: 0x16331f, tip: 0x3f6f3c });
   }
   return mergedGrad(parts);
+}
+// Much simpler versions of the same trees, for the low graphics level.
+function firTreeSimple() {
+  const parts = [{ geo: new THREE.CylinderGeometry(0.03, 0.05, 0.3, 5).translate(0, 0.15, 0), color: 0x4a3626 }];
+  for (let i = 0; i < 3; i++) parts.push({ geo: new THREE.ConeGeometry(0.3 - i * 0.085, 0.42, 6, 1, true).translate(0, 0.38 + i * 0.25, 0), color: 0x16331f, tip: 0x3f6f3c });
+  return mergedGrad(parts);
+}
+function leafTreeSimple() {
+  return mergedGrad([
+    { geo: new THREE.CylinderGeometry(0.035, 0.06, 0.45, 5).translate(0, 0.22, 0), color: 0x54402e },
+    { geo: new THREE.IcosahedronGeometry(0.33, 0).scale(1, 0.85, 1).translate(0, 0.66, 0), color: 0x2f5a26, tip: 0x86ac4d },
+  ]);
 }
 function leafTree(seed) {
   const r = rng(seed), parts = [{ geo: new THREE.CylinderGeometry(0.035, 0.06, 0.45, 7).translate(0, 0.22, 0), color: 0x54402e }];
@@ -171,7 +191,8 @@ const CAMERAS = [
 ];
 
 export class World {
-  constructor(canvas, route, imagery = null, look = {}) {
+  constructor(canvas, route, imagery = null, look = {}, quality = 'high') {
+    this._scenery = []; // batches of trees and rocks, switched off beyond the draw range
     this.route = route;
     this.imagery = imagery; // satellite picture of the area, or null
     const meta = route.meta;
@@ -216,6 +237,7 @@ export class World {
     this._grass();
 
     this.setPlayerLook(look);
+    this.setQuality(quality);
     this.bots = [];
     this.resize();
   }
@@ -284,6 +306,25 @@ export class World {
         m.dispose();
       }
     });
+  }
+
+  setQuality(level) {
+    const q = (this.quality = QUALITY[level] || QUALITY.high);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.ratio));
+    this.sun.castShadow = q.shadow > 0;
+    if (q.shadow && this.sun.shadow.mapSize.x !== q.shadow) {
+      this.sun.shadow.mapSize.set(q.shadow, q.shadow);
+      this.sun.shadow.map?.dispose();
+      this.sun.shadow.map = null;
+    }
+    if (this.grass) {
+      this._g.use = Math.min(this._g.PER, q.grass);
+      this._g.held.fill(-1e9); // replant everything at the new density
+      this._g.queue.length = 0;
+      this.grass.visible = q.grass > 0;
+      this.grass.count = this._g.use * this._g.NSEG;
+    }
+    this.resize();
   }
 
   resize() {
@@ -637,6 +678,8 @@ export class World {
     const route = this.route, P = this._p, rand = rng(1909), F = this.F, B = this.B, provence = route.meta.lowland === 'provence', img = this.imagery;
     const cone = (r, h, y) => new THREE.ConeGeometry(r, h, 7).translate(0, y, 0);
     const pine = firTree(1), leafy = leafTree(60);
+    const simple = new Map([[pine, firTreeSimple()], [leafy, leafTreeSimple()]]);
+    const mid = new Map([[pine, firTree(1, 5, 7, 1)]]);
     const cypress = merged([
       { geo: new THREE.CylinderGeometry(0.02, 0.025, 0.12, 5).translate(0, 0.06, 0), color: 0x4f3f30 },
       { geo: cone(0.095, 0.92, 0.54), color: 0x2a4a30 },
@@ -655,6 +698,10 @@ export class World {
       });
       mesh.computeBoundingSphere();
       mesh.castShadow = true;
+      mesh.userData.full = geo;
+      mesh.userData.simple = simple.get(geo) || geo;
+      mesh.userData.mid = mid.get(geo) || geo;
+      this._scenery.push(mesh);
       this.scene.add(mesh);
     };
 
@@ -898,7 +945,7 @@ export class World {
   _grass() {
     const off = new URLSearchParams(location.search).get('grass') === '0';
     const SEG = 30, NSEG = 12, PER = off ? 0 : 8500;
-    this._g = { SEG, NSEG, PER, held: new Int32Array(NSEG).fill(-1e9), queue: [] };
+    this._g = { SEG, NSEG, PER, use: PER, held: new Int32Array(NSEG).fill(-1e9), queue: [] };
     if (!PER) return;
     const blade = new THREE.PlaneGeometry(0.055, 1, 1, 3).translate(0, 0.5, 0), pa = blade.attributes.position, bc = new Float32Array(pa.count * 3);
     for (let i = 0; i < pa.count; i++) {
@@ -931,13 +978,13 @@ export class World {
   }
 
   _plantGrass(slot, seg) {
-    const { SEG, PER } = this._g, route = this.route, P = this._gp || (this._gp = {}), img = this.imagery, B = this.B;
+    const { SEG, NSEG, PER, use } = this._g, route = this.route, P = this._gp || (this._gp = {}), img = this.imagery, B = this.B;
     const rand = rng(seg * 7919 + 13), mesh = this.grass;
     const m = this._gm || (this._gm = new THREE.Matrix4()), q = new THREE.Quaternion(), e = new THREE.Euler(), sc = new THREE.Vector3(), v = new THREE.Vector3(), c = this._color;
-    for (let i = 0; i < PER; i++) {
-      const k = slot * PER + i, s = (seg + rand()) * SEG, side = rand() < 0.5 ? -1 : 1, off = 4.5 + Math.pow(rand(), 2.3) * 46;
+    for (let i = 0; i < use; i++) {
+      const k = i * NSEG + slot, s = (seg + rand()) * SEG, side = rand() < 0.5 ? -1 : 1, off = 4.5 + Math.pow(rand(), 2.3) * 46;
       const r1 = rand(), r2 = rand(), r3 = rand(), r4 = rand();
-      let show = s > -40 && s < route.total + 40, tall = 0.14 + r1 * 0.26, x = 0, z = 0, h = 0;
+      let show = i < use && s > -40 && s < route.total + 40, tall = 0.14 + r1 * 0.26, x = 0, z = 0, h = 0;
       if (show) {
         route.at(s, P);
         x = P.x + P.tz * side * off; z = P.z - P.tx * side * off;
@@ -973,7 +1020,7 @@ export class World {
 
   _updateGrass(dist) {
     const g = this._g;
-    if (!g.PER) return;
+    if (!g.PER || !g.use) return;
     const cur = Math.floor(dist / g.SEG);
     for (let seg = cur - 1; seg < cur - 1 + g.NSEG; seg++) {
       const slot = ((seg % g.NSEG) + g.NSEG) % g.NSEG;
@@ -1079,6 +1126,12 @@ export class World {
     this._time.value += dt;
     this.clouds.position.set(this._camPos.x, Math.max(2600, this._camPos.y + 1500), this._camPos.z);
     this._updateGrass(player.dist);
+    const range2 = this.quality.range ** 2, detail2 = this.quality.detail ** 2;
+    for (const m of this._scenery) {
+      const d2 = m.boundingSphere.center.distanceToSquared(this._camPos);
+      m.visible = d2 < range2;
+      m.geometry = m.userData[d2 < detail2 ? this.quality.near : this.quality.far];
+    }
   }
 
   snapCamera() {

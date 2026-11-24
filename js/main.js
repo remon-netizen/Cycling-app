@@ -14,7 +14,7 @@ const params = new URLSearchParams(location.search);
 
 // ---------- settings ----------
 const settings = Object.assign(
-  { weight: 75, bike: 8.5, ftp: 220, difficulty: 100, weather: 'live', gender: 'man', kit: '#e8412c' },
+  { weight: 75, bike: 8.5, ftp: 220, difficulty: 100, weather: 'live', gender: 'man', kit: '#e8412c', quality: 'auto', autoLevel: 'high' },
   JSON.parse(localStorage.getItem('sommet.settings') || '{}')
 );
 const fields = { weight: $('i-weight'), bike: $('i-bike'), ftp: $('i-ftp'), difficulty: $('i-diff') };
@@ -29,6 +29,8 @@ for (const [key, el] of Object.entries(fields)) {
 }
 const totalMass = () => settings.weight + settings.bike;
 const kitColor = () => parseInt(String(settings.kit).replace('#', ''), 16) || 0xe8412c;
+// 'auto' starts high and steps down by itself if the ride is not smooth
+const qualityNow = () => params.get('q') || (settings.quality === 'auto' ? settings.autoLevel || 'high' : settings.quality);
 const myLook = () => ({ gender: settings.gender, jersey: kitColor() });
 // Test mode (temporary): ride at a set power without a trainer. Switched on with the
 // small link under the start button, or with ?demo=200 in the address.
@@ -694,6 +696,13 @@ for (const [id, key] of [['i-gender', 'gender'], ['i-kit', 'kit']]) {
     world?.setPlayerLook(myLook());
   });
 }
+$('i-quality').value = settings.quality;
+$('i-quality').addEventListener('change', () => {
+  settings.quality = $('i-quality').value;
+  if (settings.quality === 'auto') settings.autoLevel = 'high';
+  localStorage.setItem('sommet.settings', JSON.stringify(settings));
+  world?.setQuality(qualityNow());
+});
 $('i-weather').value = settings.weather;
 $('i-weather').addEventListener('change', () => {
   settings.weather = $('i-weather').value;
@@ -753,6 +762,25 @@ function updateHud(dt) {
 }
 
 // ---------- main loop ----------
+// Smoothness watch for the 'auto' graphics level.
+const perf = { warm: 0, t: 0, n: 0 };
+function watchSmoothness(ms) {
+  const riding = ride.active && !ride.finished && $('summary').hidden && document.visibilityState === 'visible' && document.hasFocus();
+  if (!riding || ms > 400) { perf.warm = perf.t = perf.n = 0; return; } // not riding, or a stall that says nothing about the graphics
+  if ((perf.warm += ms) < 5000) return; // let the scene settle first
+  perf.t += ms;
+  perf.n++;
+  if (perf.t < 4000) return;
+  const fps = (perf.n * 1000) / perf.t;
+  perf.t = perf.n = 0;
+  const level = qualityNow();
+  if (settings.quality !== 'auto' || fps >= 38 || level === 'low') return;
+  settings.autoLevel = level === 'high' ? 'medium' : 'low';
+  localStorage.setItem('sommet.settings', JSON.stringify(settings));
+  world.setQuality(settings.autoLevel);
+  perf.warm = 0;
+  toast(`Graphics set to ${settings.autoLevel} to keep the ride smooth`, 5000);
+}
 let last = performance.now(), lastFrame = 0; // lastFrame: when the screen was last drawn
 function tick(now) {
   // without frames there is only a timer tick now and then, so allow long steps
@@ -763,6 +791,7 @@ function tick(now) {
   return dt;
 }
 function frame(now) {
+  if (lastFrame) watchSmoothness(now - lastFrame);
   const dt = tick(now);
   lastFrame = now;
   world.update(dt, ride, wind);
@@ -852,7 +881,7 @@ async function setRoute(id) {
   bots.length = 0;
   world?.dispose();
   weather = new Weather(route, imagery);
-  world = new World($('scene'), route, imagery, myLook());
+  world = new World($('scene'), route, imagery, myLook(), qualityNow());
   profile = new RouteProfile($('profile'), route);
   ahead = new AheadProfile($('ahead'), route);
   minimap = new MiniMap($('minimap'), route);
