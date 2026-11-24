@@ -1,6 +1,7 @@
 // Accounts and riding together. Accounts come from Supabase Auth; a "room" is a
 // Supabase Realtime channel on which every rider broadcasts where they are once
-// a second. Nothing is stored on the server.
+// a second. Nothing is stored on the server. Rooms are private channels: the
+// rules in supabase/rooms.sql let only signed-in users in.
 //
 // For development, open two tabs with ?net=local&name=Anna : that skips the
 // accounts and talks between tabs of the same browser.
@@ -77,12 +78,12 @@ export class Net {
       this._bc = new BroadcastChannel(name);
       this._bc.onmessage = (e) => this._receive(e.data.event, e.data.payload);
     } else {
-      const ch = (this._ch = this.sb.channel(name, { config: { broadcast: { self: false } } }));
+      const ch = (this._ch = this.sb.channel(name, { config: { private: true, broadcast: { self: false } } }));
       for (const ev of ['state', 'start', 'bye']) ch.on('broadcast', { event: ev }, (m) => this._receive(ev, m.payload));
       await new Promise((resolve, reject) =>
         ch.subscribe((status) => {
           if (status === 'SUBSCRIBED') resolve();
-          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') reject(new Error('Could not reach the room'));
+          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') reject(new Error('Could not join the room. Rooms are for signed-in riders; try signing out and in again.'));
         })
       );
     }
