@@ -109,6 +109,59 @@ function firTree(seed, tiers = 8, sides = 10, rings = 2) {
   }
   return mergedGrad(parts);
 }
+// A house: walls, a pitched roof and a chimney. One unit is about 9 m of frontage.
+function houseModel(brick) {
+  const roof = new THREE.CylinderGeometry(0.46, 0.46, 1.04, 3, 1).rotateZ(Math.PI / 2).rotateX(Math.PI / 2).scale(1, 0.62, 1).translate(0, 0.71, 0);
+  return mergedGrad([
+    { geo: new THREE.BoxGeometry(1, 0.56, 0.7).translate(0, 0.28, 0), color: brick ? 0x9a5a3c : 0xe6dcc8, tip: brick ? 0xb06a48 : 0xf2ead8 },
+    { geo: roof, color: brick ? 0x3b3e45 : 0xa5523a, tip: brick ? 0x4a4e57 : 0xbb6548 },
+    { geo: new THREE.BoxGeometry(0.09, 0.3, 0.09).translate(0.28, 0.86, 0.08), color: 0x6b4a3a },
+    { geo: new THREE.BoxGeometry(0.14, 0.26, 0.02).translate(-0.2, 0.13, 0.352), color: 0x4a3b30 }, // door
+    { geo: new THREE.BoxGeometry(0.2, 0.16, 0.02).translate(0.2, 0.3, 0.352), color: 0x2c3a48 }, // window
+  ]);
+}
+// A Holstein cow, about 2.4 m long at scale 1.
+function cowModel() {
+  const parts = [
+    { geo: new THREE.BoxGeometry(0.62, 0.72, 1.7).translate(0, 1.05, 0), color: 0xf4f2ec },
+    { geo: new THREE.BoxGeometry(0.64, 0.5, 0.6).translate(0, 1.12, 0.35), color: 0x18181a }, // patches
+    { geo: new THREE.BoxGeometry(0.64, 0.36, 0.42).translate(0, 1.2, -0.55), color: 0x18181a },
+    { geo: new THREE.BoxGeometry(0.34, 0.4, 0.62).translate(0, 0.98, 1.08).rotateX(0.5), color: 0x18181a }, // neck and head, grazing
+    { geo: new THREE.BoxGeometry(0.26, 0.2, 0.2).translate(0, 0.55, 1.5), color: 0xe8b4a8 }, // muzzle
+  ];
+  for (const [x, z] of [[-0.22, 0.65], [0.22, 0.65], [-0.22, -0.65], [0.22, -0.65]]) parts.push({ geo: new THREE.BoxGeometry(0.15, 0.72, 0.15).translate(x, 0.36, z), color: 0xf4f2ec });
+  return mergedGrad(parts);
+}
+// A Dutch windmill: body and cap as one shape, the sails as another so they can turn.
+function windmillBody() {
+  return mergedGrad([
+    { geo: new THREE.CylinderGeometry(2.1, 4.2, 12, 8).translate(0, 6, 0), color: 0x4a3a2c, tip: 0x5f4b39 },
+    { geo: new THREE.CylinderGeometry(4.6, 4.6, 0.5, 8).translate(0, 4.2, 0), color: 0xeae6dc }, // gallery
+    { geo: new THREE.ConeGeometry(2.5, 2.6, 8).translate(0, 13.3, 0), color: 0x2f2a25 },
+    { geo: new THREE.BoxGeometry(1.4, 2.2, 0.3).translate(0, 1.1, 4.1), color: 0x2b5a3a }, // door
+  ]);
+}
+function windmillSails() {
+  const parts = [{ geo: new THREE.CylinderGeometry(0.35, 0.35, 1.6, 8).rotateX(Math.PI / 2).translate(0, 0, 0.5), color: 0x2f2a25 }];
+  for (let i = 0; i < 4; i++) {
+    parts.push({ geo: new THREE.BoxGeometry(0.28, 11, 0.2).translate(0, 5.5, 1.1).rotateZ((i * Math.PI) / 2), color: 0x3a2f26 });
+    parts.push({ geo: new THREE.BoxGeometry(2, 8.6, 0.08).translate(1.05, 6.4, 1.1).rotateZ((i * Math.PI) / 2), color: 0xe9e2cf });
+  }
+  return mergedGrad(parts);
+}
+// A modern wind turbine, hub 95 m up.
+function turbineBody() {
+  return mergedGrad([
+    { geo: new THREE.CylinderGeometry(1.6, 2.8, 95, 10).translate(0, 47.5, 0), color: 0xe9ecef },
+    { geo: new THREE.BoxGeometry(3.4, 3.4, 9).translate(0, 96, 1), color: 0xe9ecef },
+  ]);
+}
+function turbineBlades() {
+  const parts = [{ geo: new THREE.SphereGeometry(2, 10, 8).translate(0, 0, 6.5), color: 0xe9ecef }];
+  for (let i = 0; i < 3; i++) parts.push({ geo: new THREE.BoxGeometry(2.6, 52, 0.5).translate(0, 27, 6.5).rotateZ((i * 2 * Math.PI) / 3), color: 0xf2f4f6 });
+  return mergedGrad(parts);
+}
+
 // Much simpler versions of the same trees, for the low graphics level.
 function firTreeSimple() {
   const parts = [{ geo: new THREE.CylinderGeometry(0.03, 0.05, 0.3, 5).translate(0, 0.15, 0), color: 0x4a3626 }];
@@ -232,6 +285,7 @@ export class World {
     this._road();
     this._vegetation();
     this._furniture();
+    this._extras();
     this._windFx();
     this._clouds();
     this._grass();
@@ -678,6 +732,8 @@ export class World {
     const route = this.route, P = this._p, rand = rng(1909), F = this.F, B = this.B, provence = route.meta.lowland === 'provence', img = this.imagery;
     const cone = (r, h, y) => new THREE.ConeGeometry(r, h, 7).translate(0, y, 0);
     const pine = firTree(1), leafy = leafTree(60);
+    const house = houseModel(route.meta.houses === 'brick'), cow = cowModel();
+    const treeMix = route.meta.trees, wantCows = (route.meta.extras || []).includes('cows');
     const simple = new Map([[pine, firTreeSimple()], [leafy, leafTreeSimple()]]);
     const mid = new Map([[pine, firTree(1, 5, 7, 1)]]);
     const cypress = merged([
@@ -706,7 +762,7 @@ export class World {
     };
 
     for (let c0 = 0; c0 < route.total; c0 += CHUNK) {
-      const pines = [], leafies = [], rocks = [], cypresses = [];
+      const pines = [], leafies = [], rocks = [], cypresses = [], houses = [], cows = [];
       for (let s = c0; s < Math.min(c0 + CHUNK, route.total); s += 10) {
         route.at(s, P);
         const lx = P.tz, lz = -P.tx, px = P.x, pz = P.z;
@@ -717,6 +773,18 @@ export class World {
           const r1 = rand(), r2 = rand(), r3 = rand(), r4 = rand();
           const h = this.height(x, z);
           if (this.roadDist < 6 || this.water) continue; // no trees on a sea dike
+          const rd = this.roadDist;
+          // villages: houses where the satellite picture looks built-up and the ground is fairly level
+          if (img && rd > 11 && h < B[0] && img.urban(x, z) > 0.4) {
+            if (r1 < 0.22 && Math.abs(this.height(x + 5, z) - this.height(x - 5, z)) < 2.6) {
+              const size = 8 + r3 * 5;
+              e.set(0, Math.atan2(P.tx, P.tz) + (side > 0 ? Math.PI / 2 : -Math.PI / 2) + (r4 - 0.5) * 0.5, 0);
+              m.compose(v.set(x, h - 0.3, z), q.setFromEuler(e), sc.set(size, size * (0.9 + r2 * 0.5), size));
+              tint.setScalar(0.82 + r4 * 0.3);
+              houses.push({ m: m.clone(), c: tint.clone() });
+            }
+            continue; // no forest in the middle of a village
+          }
           // real forest from the satellite picture when we have it, else by altitude
           const forest = img ? img.forest(x, z) * (1 - smooth(B[0] - 60, B[0] + 60, h)) : smooth(F[0], F[1], h) * (1 - smooth(F[2], F[3], h));
           const scree = smooth(B[0], B[1], h);
@@ -728,12 +796,18 @@ export class World {
             tint.setScalar(0.8 + r4 * 0.35);
             (tall ? cypresses : leafies).push({ m: m.clone(), c: tint.clone() });
           } else if (r1 < forest * 0.85) {
-            const broad = r2 < (h < (img ? 900 : F[1] + 360) ? 0.55 : 0.18);
+            const broad = r2 < (treeMix === 'broadleaf' ? 0.93 : treeMix === 'mixed' ? 0.5 : h < (img ? 900 : F[1] + 360) ? 0.55 : 0.18);
             const size = (broad ? 6 + r3 * 5 : 7 + r3 * 8) * (1 - 0.45 * smooth(F[2] - 90, F[3], h));
             e.set(0, r4 * 6.28, 0);
             m.compose(v.set(x, h - 0.2, z), q.setFromEuler(e), sc.set(size * (0.8 + r2 * 0.5), size, size * (0.8 + r2 * 0.5)));
             tint.setScalar(0.78 + r4 * 0.4);
             (broad ? leafies : pines).push({ m: m.clone(), c: tint.clone() });
+          } else if (wantCows && t >= 5 && t <= 7 && r2 < 0.1 && rd > 14 && forest < 0.25) {
+            // a few cows in the meadows
+            e.set(0, r4 * 6.28, 0);
+            m.compose(v.set(x, h, z), q.setFromEuler(e), sc.setScalar(0.95 + r3 * 0.25));
+            tint.setScalar(0.92 + r4 * 0.12);
+            cows.push({ m: m.clone(), c: tint.clone() });
           } else if (t < 4 && r1 > 1 - scree * 0.5) {
             const size = 0.25 + r3 * r3 * 1.6;
             e.set(r2 * 3, r4 * 6.28, r3 * 3);
@@ -747,6 +821,8 @@ export class World {
       flush(leafy, leafies);
       flush(rock, rocks);
       flush(cypress, cypresses);
+      flush(house, houses);
+      flush(cow, cows);
     }
   }
 
@@ -915,6 +991,60 @@ export class World {
     this.sky.material.uniforms.sun.value = 1 - c;
     this.sun.intensity = SUN * (1 - 0.6 * c);
     if (this.clouds) this.clouds.material.uniforms.uCover.value = cloud;
+    if (this.sea) this.sea.material.uniforms.uCloud.value = Math.min(1, cloud);
+  }
+
+  // Things that belong to particular landscapes: windmills in the polder, wind
+  // turbines and open sea beside the Afsluitdijk.
+  _extras() {
+    const route = this.route, P = this._p, extras = route.meta.extras || [], rand = rng(271);
+    const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+    this._spinners = [];
+    const stand = (body, rotor, dist, lateral, hubY, hubZ, speed) => {
+      route.at(dist, P);
+      const x = P.x + P.tz * lateral, z = P.z - P.tx * lateral, g = new THREE.Group();
+      g.position.set(x, Math.max(this.height(x, z), this.water ? 0 : -1e9) - 0.3, z);
+      g.rotation.y = rand() * 6.28;
+      const b = new THREE.Mesh(body, mat), r = new THREE.Mesh(rotor, mat);
+      r.position.set(0, hubY, hubZ);
+      r.rotation.z = rand() * 6.28;
+      b.castShadow = r.castShadow = true;
+      g.add(b, r);
+      this.scene.add(g);
+      this._spinners.push({ rotor: r, speed });
+    };
+    if (extras.includes('windmills')) {
+      const body = windmillBody(), sails = windmillSails();
+      for (let d = 900; d < route.total - 400; d += 1500 + rand() * 1200) stand(body, sails, d, (rand() < 0.5 ? -1 : 1) * (26 + rand() * 40), 12.4, 2.2, 1);
+    }
+    if (extras.includes('turbines')) {
+      const body = turbineBody(), blades = turbineBlades();
+      for (let d = route.total * 0.34; d < route.total * 0.74; d += 620) for (const row of [1, 2]) stand(body, blades, d + row * 210, -(520 + row * 560 + rand() * 120), 96, 0, 0.55);
+    }
+    if (extras.includes('sea')) {
+      // open water with moving ripples and the sun glinting on it
+      const sea = new THREE.ShaderMaterial({
+        uniforms: { uTime: (this._seaTime = { value: 0 }), uSun: { value: this.sunDir }, uCloud: { value: 0 } },
+        vertexShader: 'varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+        fragmentShader: `varying vec3 vW; uniform float uTime; uniform vec3 uSun; uniform float uCloud;
+          float h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float n(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f); return mix(mix(h(i), h(i+vec2(1,0)), f.x), mix(h(i+vec2(0,1)), h(i+vec2(1,1)), f.x), f.y); }
+          void main(){
+            vec3 v = normalize(cameraPosition - vW); float dist = length(cameraPosition - vW);
+            vec2 p = vW.xz; float fade = 1.0 / (1.0 + dist * 0.004);
+            float w1 = n(p * 0.35 + vec2(uTime * 0.6, uTime * 0.25)), w2 = n(p * 0.9 - vec2(uTime * 0.5, 0.0)), w3 = n(p * 0.05 + uTime * 0.05);
+            vec3 nrm = normalize(vec3((w1 - 0.5) * 0.5 * fade + (w2 - 0.5) * 0.3 * fade, 1.0, (w2 - 0.5) * 0.5 * fade + (w3 - 0.5) * 0.2));
+            float fres = pow(1.0 - max(dot(nrm, v), 0.0), 4.0);
+            vec3 deep = mix(vec3(0.07, 0.2, 0.3), vec3(0.14, 0.2, 0.24), uCloud), skyc = mix(vec3(0.55, 0.72, 0.9), vec3(0.62, 0.66, 0.7), uCloud);
+            vec3 c = mix(deep, skyc, clamp(fres + 0.06, 0.0, 1.0)) * (0.92 + w3 * 0.16);
+            c += vec3(1.0, 0.93, 0.8) * pow(max(dot(reflect(-uSun, nrm), v), 0.0), 220.0) * 1.6 * (1.0 - uCloud);
+            c = mix(c, vec3(0.66, 0.76, 0.86), 1.0 - exp(-dist * 0.000075));
+            gl_FragColor = vec4(c, 1.0); }`,
+      });
+      this.sea = new THREE.Mesh(new THREE.PlaneGeometry(90000, 90000).rotateX(-Math.PI / 2), sea);
+      this.sea.position.y = 0.35;
+      this.scene.add(this.sea);
+    }
   }
 
   // A drifting cloud layer; how much of the sky it fills follows the weather.
@@ -1124,6 +1254,10 @@ export class World {
     this.sun.position.set(P.x + this.sunDir.x * 200, P.y + this.sunDir.y * 200, P.z + this.sunDir.z * 200);
     this._updateWindFx(dt, wind);
     this._time.value += dt;
+    if (this._seaTime) this._seaTime.value += dt;
+    if (this.sea) this.sea.position.set(this._camPos.x, 0.35, this._camPos.z);
+    const breeze = 0.35 + (wind ? wind.speed : 0) * 0.09; // sails and blades turn faster in more wind
+    for (const sp of this._spinners) sp.rotor.rotation.z += dt * breeze * sp.speed;
     this.clouds.position.set(this._camPos.x, Math.max(2600, this._camPos.y + 1500), this._camPos.z);
     this._updateGrass(player.dist);
     const range2 = this.quality.range ** 2, detail2 = this.quality.detail ** 2;

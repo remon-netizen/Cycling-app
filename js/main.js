@@ -696,12 +696,16 @@ for (const [id, key] of [['i-gender', 'gender'], ['i-kit', 'kit']]) {
     world?.setPlayerLook(myLook());
   });
 }
+// show which level Auto has settled on
+const qualityLabel = () => ($('i-quality').options[0].textContent = settings.quality === 'auto' && settings.autoLevel !== 'high' ? `Auto (now ${settings.autoLevel})` : 'Auto (adjusts itself)');
 $('i-quality').value = settings.quality;
+qualityLabel();
 $('i-quality').addEventListener('change', () => {
   settings.quality = $('i-quality').value;
   if (settings.quality === 'auto') settings.autoLevel = 'high';
   localStorage.setItem('sommet.settings', JSON.stringify(settings));
   world?.setQuality(qualityNow());
+  qualityLabel();
 });
 $('i-weather').value = settings.weather;
 $('i-weather').addEventListener('change', () => {
@@ -778,6 +782,7 @@ function watchSmoothness(ms) {
   settings.autoLevel = level === 'high' ? 'medium' : 'low';
   localStorage.setItem('sommet.settings', JSON.stringify(settings));
   world.setQuality(settings.autoLevel);
+  qualityLabel();
   perf.warm = 0;
   toast(`Graphics set to ${settings.autoLevel} to keep the ride smooth`, 5000);
 }

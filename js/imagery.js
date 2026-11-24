@@ -63,6 +63,7 @@ export async function loadImagery(route, timeout = 9000) {
     const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
     const W = canvas.width, H = canvas.height;
     const out = [0, 0, 0];
+    const scale = route.meta.forestScale ?? 1; // dark crops read as forest in farmland; tone it down there
     const img = {
       canvas,
       // for shaders: uv = (worldXZ - rect.xy) * rect.zw
@@ -78,7 +79,13 @@ export async function loadImagery(route, timeout = 9000) {
       forest(x, zw) {
         const [r, gr, b] = img.sample(x, zw);
         const bright = (r + gr + b) / 3, green = (gr - Math.max(r, b)) / Math.max(gr, 1);
-        return smooth(-0.02, 0.1, green) * (1 - smooth(52, 92, bright));
+        return smooth(-0.02, 0.1, green) * (1 - smooth(52, 92, bright)) * scale;
+      },
+      // 0..1: looks built-up (grey and fairly bright: roofs, streets, yards)
+      urban(x, zw) {
+        const [r, gr, b] = img.sample(x, zw);
+        const mx = Math.max(r, gr, b), mn = Math.min(r, gr, b);
+        return smooth(72, 105, (r + gr + b) / 3) * (1 - smooth(0.13, 0.25, (mx - mn) / Math.max(mx, 1)));
       },
     };
     return img;
