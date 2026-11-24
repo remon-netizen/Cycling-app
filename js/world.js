@@ -79,8 +79,9 @@ const CAMERAS = [
 ];
 
 export class World {
-  constructor(canvas, route) {
+  constructor(canvas, route, imagery = null, look = {}) {
     this.route = route;
+    this.imagery = imagery; // satellite picture of the area, or null
     const meta = route.meta;
     this.F = meta.forest || [1e8, 1e8 + 1, 1e8 + 2, 1e8 + 3]; // forest: starts, full, thins, gone
     this.B = meta.bare || [1e8, 1e8 + 1]; // open rock: from, to
@@ -100,6 +101,14 @@ export class World {
     this._p = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
     this._color = new THREE.Color();
 
+    if (imagery) {
+      const t = (this.satTex = new THREE.CanvasTexture(imagery.canvas));
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.flipY = false;
+      t.anisotropy = 8;
+    }
+    // shared by the ground shaders: the satellite picture and how strongly to use it
+    this.satUniforms = { uSat: { value: this.satTex || null }, uSatRect: { value: new THREE.Vector4(...(imagery ? imagery.rect : [0, 0, 0, 0])) }, uSatMix: { value: imagery ? 0.88 : 0 } };
     this._prepareGrid();
     this._lights();
     this._sky();
@@ -110,9 +119,7 @@ export class World {
     this._furniture();
     this._windFx();
 
-    this.player = createRider({});
-    this._shadows(this.player.group);
-    this.scene.add(this.player.group);
+    this.setPlayerLook(look);
     this.bots = [];
     this.resize();
   }
@@ -124,6 +131,18 @@ export class World {
     this.cameraMode = (this.cameraMode + 1) % CAMERAS.length;
     this.player.group.visible = CAMERAS[this.cameraMode].name !== 'Handlebar';
     return this.cameraName;
+  }
+
+  // The rider you are: { gender, jersey }.
+  setPlayerLook(look) {
+    if (this.player) {
+      this.scene.remove(this.player.group);
+      this.player.group.traverse((o) => [].concat(o.material || []).forEach((m) => m.dispose()));
+    }
+    this.player = createRider(look);
+    this._shadows(this.player.group);
+    this.player.group.visible = CAMERAS[this.cameraMode].name !== 'Handlebar';
+    this.scene.add(this.player.group);
   }
 
   // everything in a model throws a shadow (name tags excepted)
@@ -187,6 +206,7 @@ export class World {
         m.dispose();
       }
     });
+    this.satTex?.dispose();
     this.renderer.dispose();
   }
 
@@ -354,13 +374,16 @@ export class World {
 
     const mat = new THREE.MeshLambertMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 2 });
     mat.onBeforeCompile = (s) => {
+      Object.assign(s.uniforms, this.satUniforms);
       s.uniforms.uMask = { value: mask };
       s.uniforms.uMaskRect = { value: new THREE.Vector4(g.x0, zMin, 1 / (cv.width * px), 1 / (cv.height * px)) };
       s.vertexShader = s.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec2 vWxz;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWxz = position.xz;');
       s.fragmentShader = s.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform sampler2D uMask; uniform vec4 uMaskRect; varying vec2 vWxz;')
+        .replace('#include <common>', '#include <common>\nuniform sampler2D uMask; uniform vec4 uMaskRect; varying vec2 vWxz;\nuniform sampler2D uSat; uniform vec4 uSatRect; uniform float uSatMix;')
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          if (uSatMix > 0.0) { vec3 sat = texture2D(uSat, (vWxz - uSatRect.xy) * uSatRect.zw).rgb; diffuseColor.rgb = mix(diffuseColor.rgb, sat * 1.3 + 0.012, uSatMix); }`)
         .replace('#include <clipping_planes_fragment>', 'if (texture2D(uMask, (vWxz - uMaskRect.xy) * uMaskRect.zw).r > 0.5) discard;\n#include <clipping_planes_fragment>');
     };
     this.scene.add(new THREE.Mesh(geo, mat));
@@ -379,6 +402,7 @@ export class World {
       return !nr || Math.abs(nr.dist - along) <= 4 + reach * 0.15;
     };
     const pos = new Float32Array(rows * cols * 3), nor = new Float32Array(rows * cols * 3), col = new Float32Array(rows * cols * 3);
+    const sat = new Float32Array(rows * cols); // 0 on the verge (keep our gravel), 1 away from the road
     let k = 0;
     for (let r = 0; r < rows; r++) {
       const s = Math.min(-110 + r * STEP, route.total + 110);
@@ -388,7 +412,7 @@ export class World {
         const skirt = ci === 0 || ci === cols - 1;
         // On hairpins the strips of two legs of road would overlap and bury
         // each other's tarmac, so each strip stops halfway to the other leg.
-        let o = OFF[Math.min(OFF.length - 1, Math.max(0, ci - 1))];
+        let o = OFF[Math.min(OFF.length - 1, Math.max(0, ci - 1))], clamped = false;
         const reach = Math.abs(o), sgn = Math.sign(o);
         if (!mine(P.x + lx * o, P.z + lz * o, sc, reach)) {
           let lo = 0.5, hi = reach;
@@ -398,6 +422,7 @@ export class World {
             else hi = mid;
           }
           o = sgn * lo;
+          clamped = true;
         }
         const x = P.x + lx * o, z = P.z + lz * o;
         const h = this.height(x, z), d = this.roadDist;
@@ -406,10 +431,12 @@ export class World {
         const nl = Math.hypot(hx / 3, 1, hz / 3);
         // under the tarmac the ground sits a little lower; the road's own shoulders hide the step
         const under = Math.abs(o) <= 4.2 ? 0.3 : 0;
-        pos[k] = x; pos[k + 1] = skirt ? h - 45 : h - under; pos[k + 2] = z;
+        // the skirt hides gaps at the outer edge; where two strips meet it only needs to be shallow
+        pos[k] = x; pos[k + 1] = skirt ? h - (clamped ? 1.5 : 45) : h - under; pos[k + 2] = z;
         nor[k] = -hx / 3 / nl; nor[k + 1] = 1 / nl; nor[k + 2] = -hz / 3 / nl;
         this.terrainColor(x, z, h, d, c);
         col[k] = c.r; col[k + 1] = c.g; col[k + 2] = c.b;
+        sat[k / 3] = smooth(5, 16, d);
         k += 3;
       }
     }
@@ -426,20 +453,24 @@ export class World {
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.setAttribute('aSat', new THREE.BufferAttribute(sat, 1));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     // Mottle the ground so grass and scree are not one flat colour up close.
     const ground = new THREE.MeshLambertMaterial({ vertexColors: true });
     ground.onBeforeCompile = (s) => {
+      Object.assign(s.uniforms, this.satUniforms);
       s.vertexShader = s.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vGround;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGround = position;');
+        .replace('#include <common>', '#include <common>\nvarying vec3 vGround; attribute float aSat; varying float vSat;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGround = position; vSat = aSat;');
       s.fragmentShader = s.fragmentShader
         .replace('#include <common>', `#include <common>
-          varying vec3 vGround;
+          varying vec3 vGround; varying float vSat;
+          uniform sampler2D uSat; uniform vec4 uSatRect; uniform float uSatMix;
           float gHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
           float gNoise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
             return mix(mix(gHash(i), gHash(i + vec2(1.0, 0.0)), f.x), mix(gHash(i + vec2(0.0, 1.0)), gHash(i + vec2(1.0, 1.0)), f.x), f.y); }`)
         .replace('#include <color_fragment>', `#include <color_fragment>
+          if (uSatMix > 0.0) { vec3 sat = texture2D(uSat, (vGround.xz - uSatRect.xy) * uSatRect.zw).rgb; diffuseColor.rgb = mix(diffuseColor.rgb, sat * 1.3 + 0.012, uSatMix * vSat); }
           float gFine = gNoise(vGround.xz * 1.7) * 0.6 + gNoise(vGround.xz * 6.0) * 0.4;
           float gBroad = gNoise(vGround.xz * 0.11);
           float gFade = 1.0 - smoothstep(60.0, 220.0, length(vGround - cameraPosition));
@@ -521,7 +552,7 @@ export class World {
   // ---------- scenery ----------
 
   _vegetation() {
-    const route = this.route, P = this._p, rand = rng(1909), F = this.F, B = this.B, provence = route.meta.lowland === 'provence';
+    const route = this.route, P = this._p, rand = rng(1909), F = this.F, B = this.B, provence = route.meta.lowland === 'provence', img = this.imagery;
     const cone = (r, h, y) => new THREE.ConeGeometry(r, h, 7).translate(0, y, 0);
     const pine = merged([
       { geo: new THREE.CylinderGeometry(0.025, 0.035, 0.3, 5).translate(0, 0.15, 0), color: 0x5b4632 },
@@ -565,9 +596,10 @@ export class World {
           const r1 = rand(), r2 = rand(), r3 = rand(), r4 = rand();
           const h = this.height(x, z);
           if (this.roadDist < 6 || this.water) continue; // no trees on a sea dike
-          const forest = smooth(F[0], F[1], h) * (1 - smooth(F[2], F[3], h));
+          // real forest from the satellite picture when we have it, else by altitude
+          const forest = img ? img.forest(x, z) * (1 - smooth(B[0] - 60, B[0] + 60, h)) : smooth(F[0], F[1], h) * (1 - smooth(F[2], F[3], h));
           const scree = smooth(B[0], B[1], h);
-          if (h < Math.min(F[1] + 10, B[0]) && forest < 0.3 && r1 < (provence ? 0.3 : 0.14)) {
+          if ((img ? forest < 0.3 && scree < 0.5 : h < Math.min(F[1] + 10, B[0]) && forest < 0.3) && r1 < (provence ? 0.3 : 0.14) * (img ? 0.35 + forest * 2 : 1)) {
             // lowlands: scattered trees (cypresses too in Provence)
             const tall = provence && r2 < 0.4, size = tall ? 8 + r3 * 6 : 5 + r3 * 4;
             e.set(0, r4 * 6.28, 0);
@@ -575,7 +607,7 @@ export class World {
             tint.setScalar(0.8 + r4 * 0.35);
             (tall ? cypresses : leafies).push({ m: m.clone(), c: tint.clone() });
           } else if (r1 < forest * 0.85) {
-            const broad = r2 < (h < F[1] + 360 ? 0.55 : 0.18);
+            const broad = r2 < (h < (img ? 900 : F[1] + 360) ? 0.55 : 0.18);
             const size = (broad ? 6 + r3 * 5 : 7 + r3 * 8) * (1 - 0.45 * smooth(F[2] - 90, F[3], h));
             e.set(0, r4 * 6.28, 0);
             m.compose(v.set(x, h - 0.2, z), q.setFromEuler(e), sc.set(size * (0.8 + r2 * 0.5), size, size * (0.8 + r2 * 0.5)));

@@ -33,8 +33,26 @@ const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', '
 export const compass = (deg) => COMPASS[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
 
 export class Weather {
-  constructor(route) {
+  constructor(route, imagery = null) {
     this.route = route;
+    // Real tree cover beside the road, every 50 m, from the satellite picture.
+    this.cover = null;
+    if (imagery) {
+      const P = {}, n = Math.ceil(route.total / 50) + 1;
+      this.cover = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        route.at(Math.min(route.total, i * 50), P);
+        let f = 0;
+        for (const o of [-40, -22, -12, 12, 22, 40]) f += imagery.forest(P.x + P.tz * o, P.z - P.tx * o) / 6;
+        // dark grass in the shade looks like forest from above: no trees above the tree line
+        const bare = route.meta.bare;
+        this.cover[i] = bare ? f * (1 - smooth(bare[0] - 60, bare[0] + 60, P.y)) : f;
+      }
+      // shelter builds up and fades over a couple of hundred metres
+      const sm = Float32Array.from(this.cover);
+      for (let i = 0; i < n; i++) sm[i] = (this.cover[Math.max(0, i - 2)] + this.cover[Math.max(0, i - 1)] + this.cover[i] * 2 + this.cover[Math.min(n - 1, i + 1)] + this.cover[Math.min(n - 1, i + 2)]) / 6;
+      this.cover = sm;
+    }
     const meta = route.meta;
     this.F = meta.forest;
     this.B = meta.bare || [1e8, 1e8 + 1];
@@ -115,12 +133,15 @@ export class Weather {
   }
 
   // How much of the wind reaches the road at this height.
-  exposure(ele) {
+  exposure(ele, dist) {
     if (this.route.meta.exposure) return this.route.meta.exposure; // e.g. a dike in open water
     const F = this.F, B = this.B;
-    const forest = F ? smooth(F[0], F[1], ele) * (1 - smooth(F[2], F[3], ele)) : 0;
+    const forest = this.cover && dist !== undefined
+      ? smooth(0.25, 0.8, this.cover[Math.min(this.cover.length - 1, Math.max(0, Math.round(dist / 50)))])
+      : F ? smooth(F[0], F[1], ele) * (1 - smooth(F[2], F[3], ele)) : 0;
     const bare = smooth(B[0], B[1], ele);
-    return EXPOSURE_OPEN + forest * (EXPOSURE_FOREST - EXPOSURE_OPEN) + bare * (EXPOSURE_BARE - EXPOSURE_OPEN);
+    const open = EXPOSURE_OPEN + bare * (EXPOSURE_BARE - EXPOSURE_OPEN);
+    return open + forest * (EXPOSURE_FOREST - open);
   }
   inForest(ele) {
     return this.exposure(ele) < 0.3;
@@ -152,7 +173,7 @@ export class Weather {
     const P = this.route.at(dist, this._p);
     const ele = this.route.ele(dist);
     this._blend(ele, out, dist);
-    const exposure = this.exposure(ele);
+    const exposure = this.exposure(ele, dist);
     let k = RIDER_HEIGHT * exposure;
     if (time !== undefined) k *= 1 + (out.gustRatio - 1) * this._gust(time + dist / 40);
     const wx = out.u * k, wz = -out.n * k; // world z points south

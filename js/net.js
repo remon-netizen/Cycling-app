@@ -127,6 +127,7 @@ export class Net {
     const was = peer.riding, wasRoute = peer.route, wasDone = peer.finished;
     Object.assign(peer, {
       name: String(p.name || 'Rider').slice(0, 20), route: String(p.route || '').slice(0, 24), riding: !!p.riding, finished: !!p.finished, dist: num(p.dist, 0, 1e6),
+      gender: p.gender === 'woman' ? 'woman' : 'man', kit: num(p.kit, -1, 0xffffff) | 0,
       v: num(p.v, 0, 40), power: num(p.power, 0, 3000), wkg: num(p.wkg, 0, 30), cadence: num(p.cadence, 0, 250), last: performance.now(),
     });
     if (isNew || was !== peer.riding || wasRoute !== peer.route || wasDone !== peer.finished) this.onpeers();

@@ -95,6 +95,8 @@ label { display: flex; justify-content: space-between; align-items: center; font
 label span { opacity: 0.8; font-size: 13px; }
 input, select { font: inherit; color: #fff; background: rgba(255, 255, 255, 0.09); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 8px; padding: 6px 8px; width: 78px; text-align: right; }
 select { width: 190px; text-align: left; }
+select.short { width: 110px; }
+input[type=color] { width: 44px; height: 32px; padding: 2px; vertical-align: middle; }
 select option { color: #111; }
 .foot { text-align: center; font-size: 12.5px; opacity: 0.65; margin-top: 12px; }
 .foot.err { color: #ff9d8f; opacity: 1; }
@@ -109,6 +111,8 @@ select option { color: #111; }
 .btn.small { width: auto; padding: 8px 16px; font-size: 13.5px; margin-top: 0; }
 .mp-who { font-size: 14px; flex: 1; }
 .link { background: none; border: 0; padding: 0 2px; font-size: 13px; color: #ffc155; text-decoration: underline; }
+.foot.credit { font-size: 10.5px; opacity: 0.45; }
+.foot.credit a { color: inherit; }
 .link.quiet { color: inherit; opacity: 0.7; font-size: 12px; }
 .mp-peers { font-size: 13.5px; opacity: 0.85; margin: 2px 0 4px; }
 .riders { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.12); font-size: 13px; }

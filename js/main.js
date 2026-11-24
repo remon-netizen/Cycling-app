@@ -4,6 +4,7 @@ import { Trainer, HeartRate, bluetoothAvailable } from './ble.js';
 import { stepSpeed, estimateTime, airAsGrade, draftSaving, drag, cdaFor, CRR } from './physics.js';
 import { Weather } from './weather.js';
 import { Net, cleanCode, newCode } from './net.js';
+import { loadImagery } from './imagery.js';
 import { History, buildRecord, summarise, improvements, WINDOW_NAMES } from './history.js';
 import { RouteProfile, AheadProfile, MiniMap, gradeColor } from './hud.js';
 import { buildTcx, download } from './tcx.js';
@@ -13,7 +14,7 @@ const params = new URLSearchParams(location.search);
 
 // ---------- settings ----------
 const settings = Object.assign(
-  { weight: 75, bike: 8.5, ftp: 220, difficulty: 100, weather: 'live' },
+  { weight: 75, bike: 8.5, ftp: 220, difficulty: 100, weather: 'live', gender: 'man', kit: '#e8412c' },
   JSON.parse(localStorage.getItem('sommet.settings') || '{}')
 );
 const fields = { weight: $('i-weight'), bike: $('i-bike'), ftp: $('i-ftp'), difficulty: $('i-diff') };
@@ -27,6 +28,8 @@ for (const [key, el] of Object.entries(fields)) {
   });
 }
 const totalMass = () => settings.weight + settings.bike;
+const kitColor = () => parseInt(String(settings.kit).replace('#', ''), 16) || 0xe8412c;
+const myLook = () => ({ gender: settings.gender, jersey: kitColor() });
 // Test mode (temporary): ride at a set power without a trainer. Switched on with the
 // small link under the start button, or with ?demo=200 in the address.
 let testPower = params.has('demo') ? Math.max(0, parseFloat(params.get('demo')) || 200) : null;
@@ -519,7 +522,7 @@ async function joinRoom(code) {
 function sendState() {
   if (!net.room) return;
   net.sendState({
-    route: routeId, riding: ride.active, finished: ride.finished, dist: Math.round(ride.dist * 10) / 10,
+    gender: settings.gender, kit: kitColor(), route: routeId, riding: ride.active, finished: ride.finished, dist: Math.round(ride.dist * 10) / 10,
     v: $('summary').hidden ? Math.round(ride.v * 100) / 100 : 0,
     power: Math.round(ride.power), wkg: Math.round((ride.shownPower / settings.weight) * 10) / 10, cadence: Math.round(ride.cadence),
   });
@@ -632,10 +635,17 @@ function updateRemotes(dt) {
   let i = 0;
   for (const p of net.peers.values()) {
     let r = remotes.get(p.id);
+    const look = `${p.name}|${p.gender}|${p.kit}`;
+    if (r && r.look !== look) {
+      world.removeRemote(r);
+      r = null;
+    }
     if (!r) {
       let h = 0;
       for (const c of p.id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-      remotes.set(p.id, (r = world.addRemote(p.name, KITS[h % KITS.length])));
+      const kit = KITS[h % KITS.length];
+      remotes.set(p.id, (r = world.addRemote(p.name, { ...kit, gender: p.gender, ...(p.kit >= 0 ? { jersey: p.kit } : {}) })));
+      r.look = look;
     }
     const visible = p.riding && here(p) && Math.abs(p.shown - ride.dist) < 1200;
     world.placeRider(r, p.shown, -0.6 - (i++ % 3) * 0.8, p.crank, visible);
@@ -675,6 +685,14 @@ async function loadWeather() {
     ? `${settings.weather === 'live' ? 'Now: ' : ''}${weather.describe()}`
     : 'Live weather could not be loaded, so this ride has no wind.';
   world?.setSky(weather.at(ride.dist, undefined, {}).cloud);
+}
+for (const [id, key] of [['i-gender', 'gender'], ['i-kit', 'kit']]) {
+  $(id).value = settings[key];
+  $(id).addEventListener('input', () => {
+    settings[key] = $(id).value;
+    localStorage.setItem('sommet.settings', JSON.stringify(settings));
+    world?.setPlayerLook(myLook());
+  });
 }
 $('i-weather').value = settings.weather;
 $('i-weather').addEventListener('change', () => {
@@ -825,12 +843,16 @@ async function setRoute(id) {
   new RouteProfile($('rc-profile'), route, false).draw(route.total);
   await new Promise((r) => setTimeout(r, 30));
 
+  $('rc-facts').textContent += '  ·  loading scenery…';
+  const imagery = params.get('sat') === '0' ? null : await loadImagery(route);
+  if (ride.active) return false;
+  $('rc-facts').textContent = $('rc-facts').textContent.replace('  ·  loading scenery…', '');
   for (const r of remotes.values()) world?.removeRemote(r);
   remotes.clear();
   bots.length = 0;
   world?.dispose();
-  weather = new Weather(route);
-  world = new World($('scene'), route);
+  weather = new Weather(route, imagery);
+  world = new World($('scene'), route, imagery, myLook());
   profile = new RouteProfile($('profile'), route);
   ahead = new AheadProfile($('ahead'), route);
   minimap = new MiniMap($('minimap'), route);

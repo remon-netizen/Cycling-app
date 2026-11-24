@@ -15,7 +15,9 @@ function setTube(mesh, a, b, r) {
   mesh.scale.set(r, len, r);
 }
 
-export function createRider({ jersey = 0xe8412c, shorts = 0x1c1f26, helmet = 0xffffff, frame = 0x2b6fd6 } = {}) {
+// gender: 'man' | 'woman' changes the build of the rider (shoulders, torso, hips, a ponytail).
+export function createRider({ jersey = 0xe8412c, shorts = 0x1c1f26, helmet = 0xffffff, frame = 0x2b6fd6, gender = 'man' } = {}) {
+  const woman = gender === 'woman';
   const group = new THREE.Group();
   const mat = (color) => new THREE.MeshLambertMaterial({ color });
   const mFrame = mat(frame), mDark = mat(0x16181c), mSkin = mat(0xd9a27e), mJersey = mat(jersey);
@@ -64,7 +66,12 @@ export function createRider({ jersey = 0xe8412c, shorts = 0x1c1f26, helmet = 0xf
 
   // Rider
   const hip = V(0, 1.0, -0.22), shoulder = V(0, 1.36, 0.14);
-  tube(hip, shoulder, 0.125, mJersey);
+  tube(hip, shoulder, woman ? 0.104 : 0.125, mJersey);
+  if (woman) {
+    const mHair = mat(0x5a3a22);
+    tube(V(0, 1.49, 0.16), V(0, 1.4, 0.07), 0.04, mHair);
+    tube(V(0, 1.4, 0.07), V(0, 1.27, 0.03), 0.028, mHair);
+  }
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), mSkin);
   head.position.set(0, 1.5, 0.25);
   group.add(head);
@@ -74,15 +81,15 @@ export function createRider({ jersey = 0xe8412c, shorts = 0x1c1f26, helmet = 0xf
   lid.rotation.x = 0.25;
   group.add(lid);
   for (const s of [-1, 1]) {
-    const sh = V(0.17 * s, 1.33, 0.13), elbow = V(0.2 * s, 1.14, 0.33), hand = V(0.19 * s, 0.98, 0.47);
-    tube(sh, elbow, 0.045, mJersey);
-    tube(elbow, hand, 0.036, mSkin);
+    const sh = V((woman ? 0.145 : 0.17) * s, 1.33, 0.13), elbow = V((woman ? 0.18 : 0.2) * s, 1.14, 0.33), hand = V(0.19 * s, 0.98, 0.47);
+    tube(sh, elbow, woman ? 0.038 : 0.045, mJersey);
+    tube(elbow, hand, woman ? 0.031 : 0.036, mSkin);
   }
 
   const CRANK = 0.17, THIGH = 0.45, SHIN = 0.46;
   const legs = [-1, 1].map((s) => ({
     side: s,
-    hip: V(0.09 * s, 0.99, -0.2),
+    hip: V((woman ? 0.098 : 0.09) * s, 0.99, -0.2),
     thigh: tube(V(0, 0, 0), V(0, 1, 0), 0.066, mShorts),
     shin: tube(V(0, 0, 0), V(0, 1, 0), 0.044, mSkin),
     crank: tube(V(0, 0, 0), V(0, 1, 0), 0.012, mMetal),
@@ -114,8 +121,8 @@ export function createRider({ jersey = 0xe8412c, shorts = 0x1c1f26, helmet = 0xf
       const out = Math.sqrt(Math.max(0, THIGH * THIGH - along * along));
       perp.set(0, 0, 1).addScaledVector(dir, -dir.z).normalize();
       knee.copy(leg.hip).addScaledVector(dir, along).addScaledVector(perp, out);
-      setTube(leg.thigh, leg.hip, knee, 0.066);
-      setTube(leg.shin, knee, foot, 0.044);
+      setTube(leg.thigh, leg.hip, knee, woman ? 0.062 : 0.066);
+      setTube(leg.shin, knee, foot, woman ? 0.039 : 0.044);
     }
   }
   pose(0.6, 0);
