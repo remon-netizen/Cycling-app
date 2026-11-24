@@ -1,5 +1,11 @@
-// Web Bluetooth: smart trainer (FTMS, with Tacx FE-C and Cycling Power
-// fallbacks) and heart rate monitor.
+// Web Bluetooth: smart trainers, power meters and heart rate monitors.
+//
+// Trainers are tried in this order:
+//   FTMS         the Bluetooth standard: Wahoo KICKR (recent firmware), Tacx/Garmin,
+//                Elite, Saris, Zwift Hub, JetBlack, Kinetic, Magene, Van Rysel, ...
+//   Tacx FE-C    older Tacx firmware
+//   Wahoo        older KICKR / KICKR Core / SNAP firmware (Wahoo's own extension)
+//   Power only   power meters and trainers that only report: no resistance control
 
 const FTMS = 0x1826, INDOOR_BIKE_DATA = 0x2ad2, FTMS_CONTROL = 0x2ad9;
 const CPS = 0x1818, CP_MEASUREMENT = 0x2a63;
@@ -7,6 +13,9 @@ const HRS = 0x180d, HR_MEASUREMENT = 0x2a37;
 const TACX = '6e40fec1-b5a3-f393-e0a9-e50e24dcca9e';
 const TACX_NOTIFY = '6e40fec2-b5a3-f393-e0a9-e50e24dcca9e';
 const TACX_WRITE = '6e40fec3-b5a3-f393-e0a9-e50e24dcca9e';
+const WAHOO_CONTROL = 'a026e005-0a7d-4ab3-97fa-f1500f9feb8b'; // lives inside the Cycling Power service
+const le16 = (n) => [n & 0xff, (n >> 8) & 0xff];
+const clamp16 = (n) => Math.max(0, Math.min(65535, Math.round(n)));
 
 export const bluetoothAvailable = () => typeof navigator !== 'undefined' && !!navigator.bluetooth;
 
@@ -82,7 +91,10 @@ export class Trainer extends Device {
 
   connect() {
     return this._open({
-      filters: [{ services: [FTMS] }, { services: [CPS] }, { services: [TACX] }, { namePrefix: 'Tacx' }, { namePrefix: 'TACX' }],
+      filters: [
+        { services: [FTMS] }, { services: [CPS] }, { services: [TACX] },
+        ...['Tacx', 'TACX', 'KICKR', 'Wahoo', 'Elite', 'Saris', 'Zwift', 'DIRETO', 'SUITO'].map((namePrefix) => ({ namePrefix })),
+      ],
       optionalServices: [FTMS, CPS, TACX],
     });
   }
@@ -93,8 +105,19 @@ export class Trainer extends Device {
     this.speed = 0;
     this._control = null;
     this._fec = null;
+    this._wahoo = null;
     this._crank = null;
     this._queue = Promise.resolve();
+  }
+
+  // Total weight of rider and bike in kg. Wahoo's own protocol needs it.
+  setRider(mass) {
+    this._mass = mass;
+    this._wahooSim();
+  }
+  _wahooSim(crr = 0.004, cw = 0.51) {
+    if (!this._wahoo) return;
+    this._write(this._wahoo, [0x43, ...le16(clamp16((this._mass || 85) * 100)), ...le16(clamp16(crr * 10000)), ...le16(clamp16(cw * 1000))]);
   }
 
   async _setup() {
@@ -143,6 +166,15 @@ export class Trainer extends Device {
       m.addEventListener('characteristicvaluechanged', (e) => this._onPower(e.target.value));
       await m.startNotifications();
       this.protocol = 'Power only';
+      const wahoo = await cps.getCharacteristic(WAHOO_CONTROL).catch(() => null);
+      if (wahoo) {
+        await wahoo.startNotifications().catch(() => {});
+        this._wahoo = wahoo;
+        this.protocol = 'Wahoo';
+        this.canControl = true;
+        await this._write(wahoo, [0x20, 0xee, 0xfc]); // unlock
+        this._wahooSim();
+      }
       return;
     }
     throw new Error('This device does not offer a trainer or power service.');
@@ -170,6 +202,8 @@ export class Trainer extends Device {
       const msg = [0xa4, 0x09, 0x4f, 0x05, 0x33, 0xff, 0xff, 0xff, 0xff, g & 0xff, (g >> 8) & 0xff, Math.round(crr / 0.00005)];
       msg.push(msg.reduce((a, b) => a ^ b, 0));
       this._write(this._fec, msg);
+    } else if (this._wahoo) {
+      this._write(this._wahoo, [0x46, ...le16(clamp16((gradePct / 100 + 1) * 32768))]);
     }
   }
 

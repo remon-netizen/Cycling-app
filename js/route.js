@@ -77,6 +77,19 @@ export class Route {
     this.minEle = Math.min(...E);
     this.maxEle = Math.max(...E);
 
+    // How fast each bend can be taken (about 0.6 g of grip), then worked
+    // backwards so there is always room to brake for the bend ahead.
+    const LATERAL = 6, BRAKE = 3.5, TOP = 27;
+    const V = (this.V = new Float64Array(n).fill(TOP));
+    const K = 3; // samples either side, ~30 m of road
+    for (let i = K; i < n - K; i++) {
+      const ax = X[i] - X[i - K], az = Z[i] - Z[i - K], bx = X[i + K] - X[i], bz = Z[i + K] - Z[i];
+      const turn = Math.abs(Math.atan2(ax * bz - az * bx, ax * bx + az * bz));
+      const arc = (D[i + K] - D[i - K]) / 2;
+      if (turn > 0.02) V[i] = Math.min(TOP, Math.max(4.5, Math.sqrt(LATERAL * (arc / turn))));
+    }
+    for (let i = n - 2; i >= 0; i--) V[i] = Math.min(V[i], Math.sqrt(V[i + 1] ** 2 + 2 * BRAKE * (D[i + 1] - D[i])));
+
     // Spatial hash for nearest-road queries.
     this.cell = 120;
     this.hash = new Map();
@@ -130,6 +143,13 @@ export class Route {
     const i = this._index(dist);
     const t = (dist - this.D[i]) / (this.D[i + 1] - this.D[i]);
     return this.E[i] + (this.E[i + 1] - this.E[i]) * t;
+  }
+
+  // Fastest safe speed (m/s) at this point, bends ahead included.
+  speedLimit(dist) {
+    if (dist <= 0 || dist >= this.total) return 27;
+    const i = this._index(dist);
+    return Math.min(this.V[i], this.V[i + 1]);
   }
 
   // Gradient in percent, measured over `span` metres centred on dist.

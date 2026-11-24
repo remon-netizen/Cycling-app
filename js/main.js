@@ -1,7 +1,7 @@
 import { loadRoute } from './route.js';
 import { World } from './world.js';
 import { Trainer, HeartRate, bluetoothAvailable } from './ble.js';
-import { stepSpeed, estimateTime, windAsGrade, drag, CRR } from './physics.js';
+import { stepSpeed, estimateTime, airAsGrade, draftSaving, drag, cdaFor, CRR } from './physics.js';
 import { Weather } from './weather.js';
 import { Net, cleanCode, newCode } from './net.js';
 import { RouteProfile, AheadProfile, MiniMap, gradeColor } from './hud.js';
@@ -31,8 +31,8 @@ const totalMass = () => settings.weight + settings.bike;
 const trainer = new Trainer();
 const hrm = new HeartRate();
 let route, world, profile, ahead, minimap, weather;
-const wind = { speed: 0, head: 0, side: 0, wx: 0, wz: 0, temp: 15, cloud: 0, exposure: 1, forest: false };
-const botWind = {};
+const wind = { speed: 0, head: 0, side: 0, wx: 0, wz: 0, temp: 15, cloud: 0, exposure: 1, forest: false, draft: 0 };
+const botWind = { draft: 0 }, noDraft = {}, gaps = [];
 const net = new Net();
 const remotes = new Map(); // peer id -> 3D rider
 
@@ -41,7 +41,7 @@ const ride = {
   dist: 0, v: 0, crank: 0, power: 0, cadence: 0, hr: 0, shownPower: 0,
   moving: 0, wall: 0, climbed: 0, energy: 0, powerSum: 0, hrSum: 0, hrTime: 0, cadSum: 0, cadTime: 0,
   samples: [], demoPower: Math.max(0, parseFloat(params.get('demo')) || 200), eta: Infinity, recent: [],
-  nextLandmark: 0, sentGrade: null, sentAt: 0, secAcc: 0, etaAcc: 0, windWork: 0, wasForest: null,
+  nextLandmark: 0, sentGrade: null, sentAt: 0, secAcc: 0, etaAcc: 0, windWork: 0, draftWork: 0, braking: false, wasForest: null,
 };
 const bots = [];
 
@@ -97,6 +97,7 @@ function deviceUi() {
 }
 trainer.onstatus = () => {
   ride.sentGrade = null;
+  if (trainer.connected) trainer.setRider(totalMass());
   deviceUi();
   if (ride.active && !trainer.connected && trainer._wanted) toast('Trainer connection lost, reconnecting…');
 };
@@ -133,11 +134,12 @@ function startRide(startDist) {
   Object.assign(ride, {
     active: true, finished: false, startDist, startDate: new Date(), dist: startDist, v: 0,
     moving: 0, wall: 0, climbed: 0, energy: 0, powerSum: 0, hrSum: 0, hrTime: 0, cadSum: 0, cadTime: 0,
-    samples: [], recent: [], sentGrade: null, secAcc: 0, etaAcc: 5, windWork: 0, wasForest: null,
+    samples: [], recent: [], sentGrade: null, secAcc: 0, etaAcc: 5, windWork: 0, draftWork: 0, braking: false, wasForest: null,
   });
   ride.nextLandmark = route.landmarks.findIndex((l) => l.dist > startDist + 50);
   const wkg = [2.1, 2.6, 2.9, 3.2, 3.5, 4.0], offs = [18, 45, 90, 160, 260, 420];
   bots.forEach((b, i) => Object.assign(b, { dist: Math.max(0, startDist + offs[i]), v: 4, power: wkg[i] * 72, crank: i }));
+  trainer.setRider(totalMass());
   world.snapCamera();
   $('start').hidden = true;
   $('summary').hidden = true;
@@ -167,9 +169,21 @@ function simulate(dt) {
     const h = Math.min(0.1, left);
     left -= h;
     const eleBefore = route.ele(ride.dist);
+    const grade = route.grade(ride.dist), limit = route.speedLimit(ride.dist);
     weather.at(ride.dist, ride.wall, wind);
-    ride.v = stepSpeed(ride.v, ride.power, route.grade(ride.dist), mass, eleBefore, h, wind.head, wind.temp);
-    ride.windWork += (drag(ride.v, eleBefore, wind.head, wind.temp) - drag(ride.v, eleBefore, 0, wind.temp)) * ride.v * h;
+    // shelter behind whoever is just in front: other people in a room, bots otherwise
+    gaps.length = 0;
+    if (net.room) { for (const p of net.peers.values()) if (p.riding) gaps.push(p.dist - ride.dist); }
+    else for (const b of bots) gaps.push(b.dist - ride.dist);
+    wind.draft = draftSaving(gaps);
+    const before = ride.v;
+    ride.v = stepSpeed(ride.v, ride.power, grade, mass, eleBefore, h, wind, limit);
+    ride.braking = ride.v >= limit - 0.01 && before >= limit - 0.3 && limit < 26;
+    const cda = cdaFor(ride.v, grade, ride.power);
+    Object.assign(noDraft, wind, { draft: 0 });
+    const alone = drag(ride.v, eleBefore, noDraft, cda);
+    ride.windWork += (alone - drag(ride.v, eleBefore, { temp: wind.temp }, cda)) * ride.v * h;
+    ride.draftWork += (alone - drag(ride.v, eleBefore, wind, cda)) * ride.v * h;
     ride.wall += h;
     ride.dist = Math.min(route.total, ride.dist + ride.v * h);
     const gain = route.ele(ride.dist) - eleBefore;
@@ -184,7 +198,11 @@ function simulate(dt) {
     for (const b of bots) {
       if (b.dist >= route.total) continue;
       weather.at(b.dist, ride.wall, botWind);
-      b.v = stepSpeed(b.v, b.power, route.grade(b.dist), 80, route.ele(b.dist), h, botWind.head, botWind.temp);
+      gaps.length = 0;
+      gaps.push(ride.dist - b.dist);
+      for (const o of bots) if (o !== b) gaps.push(o.dist - b.dist);
+      botWind.draft = draftSaving(gaps);
+      b.v = stepSpeed(b.v, b.power, route.grade(b.dist), 80, route.ele(b.dist), h, botWind, route.speedLimit(b.dist));
       b.dist += b.v * h;
       b.crank += ((70 + b.power / 14) / 60) * 2 * Math.PI * h;
     }
@@ -216,7 +234,7 @@ function everySecond() {
   // resistance: follow the slope just ahead of the wheel
   const now = performance.now();
   // a headwind is felt as a little extra slope, a tailwind as a little less
-  const windGrade = windAsGrade(ride.v, totalMass(), p.y, wind.head, wind.temp);
+  const windGrade = airAsGrade(ride.v, totalMass(), p.y, wind, route.grade(ride.dist), ride.power);
   const g = Math.max(-5, Math.min(16, ((route.grade(ride.dist + 3, 20) + windGrade) * settings.difficulty) / 100));
   if (trainer.connected && !ride.finished && (ride.sentGrade === null || Math.abs(g - ride.sentGrade) >= 0.1 || now - ride.sentAt > 4000)) {
     trainer.setGrade(g, CRR);
@@ -268,6 +286,7 @@ function showSummary(finished) {
     [ride.cadTime ? Math.round(ride.cadSum / ride.cadTime) : '–', 'avg rpm'],
     [ride.hrTime ? Math.round(ride.hrSum / ride.hrTime) : '–', 'avg bpm'],
   ];
+  if (ride.draftWork / t >= 1) cells.push([Math.round(ride.draftWork / t), 'avg W saved drafting']);
   if (weather.mode !== 'calm') {
     const w = ride.windWork / t;
     cells.push([`${w > 0.5 ? '+' : ''}${Math.round(w)}`, w >= 0 ? 'avg W lost to wind' : 'avg W from tailwind']);
@@ -525,13 +544,19 @@ function updateHud(dt) {
   $('h-grade').textContent = (Math.abs(g) < 0.05 ? 0 : g).toFixed(1);
   $('h-grade-box').style.background = gradeColor(g);
   const span = Math.min(1000, route.total - ride.dist);
-  $('h-next').textContent = span > 100 ? `next ${span >= 1000 ? 'km' : Math.round(span) + ' m'} ${route.grade(ride.dist + span / 2, span).toFixed(1)}%` : 'almost there';
+  $('h-next').textContent = ride.braking ? 'braking for the bend' : span > 100 ? `next ${span >= 1000 ? 'km' : Math.round(span) + ' m'} ${route.grade(ride.dist + span / 2, span).toFixed(1)}%` : 'almost there';
   $('h-wind').textContent = Math.round(wind.speed * 3.6);
   $('h-wind-label').textContent = windName(wind);
   // arrow shows where the air goes, with "up" being the way you ride
   $('h-wind-arrow').style.transform = `rotate(${(Math.atan2(wind.side, -wind.head) * 180) / Math.PI}deg)`;
   $('h-wind-arrow').style.opacity = wind.speed < 1.4 ? 0.25 : 1;
-  const cost = (drag(ride.v, route.ele(ride.dist), wind.head, wind.temp) - drag(ride.v, route.ele(ride.dist), 0, wind.temp)) * ride.v;
+  const eleNow = route.ele(ride.dist), cdaNow = cdaFor(ride.v, g, ride.power);
+  Object.assign(noDraft, wind, { draft: 0 });
+  const aloneNow = drag(ride.v, eleNow, noDraft, cdaNow);
+  const cost = (aloneNow - drag(ride.v, eleNow, { temp: wind.temp }, cdaNow)) * ride.v;
+  const saved = (aloneNow - drag(ride.v, eleNow, wind, cdaNow)) * ride.v;
+  $('h-draft').hidden = wind.draft < 0.05;
+  $('h-draft').textContent = `Drafting · saving ${Math.round(saved)} W`;
   const where = wind.forest ? 'sheltered by the forest' : wind.exposure > 0.8 ? 'fully exposed' : 'open country';
   $('h-wx').textContent = `${Math.round(wind.temp)}°C · ${where}${Math.abs(cost) >= 3 ? ` · ${cost > 0 ? '+' : '−'}${Math.abs(Math.round(cost))} W` : ''}`;
   $('h-wind-box').hidden = weather.mode === 'calm' && !weather.live;
