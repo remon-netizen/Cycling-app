@@ -290,7 +290,7 @@ scene.add(sun, sun.target, new THREE.HemisphereLight(0xc4dcff, 0x6b6248, 2.3));
 
 // ---------- riders ----------
 const riders = [{ off: 0, lat: -1.4, look: { gender: 'woman', jersey: 0x19a7a0 } }, { off: 9, lat: -0.5, look: { jersey: 0xe8412c } }, { off: 34, lat: -1.8, look: { jersey: 0xf2c21a, frame: 0xc93a2e } }]
-  .map((r) => { const m = createRider(r.look); m.group.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.material = new THREE.MeshStandardMaterial({ color: o.material.color, roughness: 0.55, metalness: 0.05 }); } }); scene.add(m.group); return { ...r, m }; });
+  .map((r) => { const m = createRider(r.look); m.group.traverse((o) => { if (o.isMesh) o.castShadow = true; }); scene.add(m.group); return { ...r, m }; });
 
 // ---------- post-processing ----------
 const composer = new EffectComposer(renderer);
@@ -301,6 +301,7 @@ function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h
 addEventListener('resize', resize); resize();
 
 // ---------- ride along the road, forever ----------
+const BACK = +(params.get('back') ?? 6.6), SIDE = +(params.get('side') ?? 0.9), UPH = +(params.get('up') ?? 2.35);
 const SPEED = +params.get('speed') || 4.6, START = +params.get('at') || 60, camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
 let last = performance.now(), t = 0, frames = 0, fpsAt = last, first = true;
 function frame(now) {
@@ -312,7 +313,7 @@ function frame(now) {
     g.rotation.set(-Math.atan(roadY(z + 0.5) - roadY(z - 0.5)), Math.atan2(tx, 1), 0, 'YXZ'); r.m.pose(t * 8.6 + r.off, (z / 0.34));
   }
   const me = riders[0].m.group.position, tx = roadDX(z0), l = Math.hypot(tx, 1);
-  const want = new THREE.Vector3(me.x - (tx / l) * 6.6 + 0.9, me.y + 2.35, me.z - (1 / l) * 6.6), look = new THREE.Vector3(me.x + (tx / l) * 9, me.y + 1.25, me.z + (1 / l) * 9);
+  const want = new THREE.Vector3(me.x - (tx / l) * BACK + SIDE, me.y + UPH, me.z - (1 / l) * BACK), look = new THREE.Vector3(me.x + (tx / l) * 9, me.y + 1.25, me.z + (1 / l) * 9);
   const k = first ? 1 : 1 - Math.exp(-dt * 4); first = false; camPos.lerp(want, k); camLook.lerp(look, k); camera.position.copy(camPos); camera.lookAt(camLook);
   sun.target.position.copy(me); sun.position.copy(me).addScaledVector(sunDir, 220);
   composer.render(dt);
