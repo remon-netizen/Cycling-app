@@ -115,7 +115,7 @@ function deviceUi() {
   const sh = $('s-hr');
   sh.classList.toggle('ok', hrm.connected);
   sh.textContent = hrm.connected ? `✓ ${hrm.name}` : 'Connect heart rate strap';
-  if (hrm.connected) $('s-hr-status').textContent = 'Connected';
+  sh.textContent = hrm.connected ? `✓ ${hrm.name}` : 'Connect heart rate';
   if (route && !ride.active && !countdown) $('s-go').textContent = goLabel();
   $('s-go').classList.toggle('waiting', !canRide());
   $('test-chip').hidden = testPower === null || trainer.connected || !ride.active || !!run;
@@ -133,6 +133,7 @@ hrm.onstatus = deviceUi;
 
 async function connect(dev, statusEl) {
   if (!bluetoothAvailable()) {
+    statusEl.hidden = false;
     statusEl.className = 'hint err';
     statusEl.textContent = 'Web Bluetooth is not available. Use Chrome or Edge on a computer with Bluetooth.';
     if (ride.active) toast('Web Bluetooth is not available in this browser');
@@ -140,6 +141,7 @@ async function connect(dev, statusEl) {
   }
   if (dev.connected) return;
   try {
+    statusEl.hidden = false;
     statusEl.className = 'hint';
     statusEl.textContent = 'Connecting…';
     await dev.connect();
@@ -351,10 +353,33 @@ function control(ele = route.ele(ride.dist)) {
 
 // ---------- training sessions ----------
 const KIND = { warm: 'Warm-up', easy: 'Easy', work: 'Effort', steady: 'Steady', cool: 'Cool-down' };
-const pickedSession = () => {
-  const v = $('i-workout').value;
-  return v ? SESSIONS[+v.slice(1)] || null : null;
-};
+// ---------- start screen: tabs ----------
+// 'ride' or 'training': what the start button starts. It follows the tab you were on last.
+let mode = settings.mode === 'training' ? 'training' : 'ride';
+function showTab(name) {
+  if (!document.querySelector(`.pane[data-pane="${name}"]`)) name = 'ride';
+  for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('on', b.dataset.tab === name);
+  for (const p of document.querySelectorAll('.pane')) p.hidden = p.dataset.pane !== name;
+  if (name === 'ride' || name === 'training') mode = settings.mode = name;
+  settings.tab = name;
+  localStorage.setItem('sommet.settings', JSON.stringify(settings));
+  $('home-body').scrollTop = 0;
+  if (name === 'progress') showHistory();
+  trainingUi();
+}
+$('tabs').addEventListener('click', (e) => e.target.dataset.tab && showTab(e.target.dataset.tab));
+$('start').addEventListener('click', (e) => e.target.dataset.go && showTab(e.target.dataset.go));
+function routeCards() {
+  $('route-list').innerHTML = Object.keys(TYPES)
+    .map((t) => `<h3>${TYPES[t]}</h3><div class="routes">${ROUTES.filter((r) => r.type === t).map((r) => `<button type="button" class="rt${r.id === routeId ? ' on' : ''}" data-route="${r.id}"><b>${esc(r.name)}</b><span>${r.km} km · ${r.up} m ↑</span></button>`).join('')}</div>`)
+    .join('');
+}
+$('route-list').addEventListener('click', (e) => {
+  const id = e.target.closest('.rt')?.dataset.route;
+  if (id) chooseRoute(id);
+});
+
+const pickedSession = () => (mode === 'training' ? SESSIONS[+$('i-workout').value.slice(1)] || null : null);
 let audio = null;
 function beep(freq, len) {
   try {
@@ -416,45 +441,46 @@ function closeSession() {
   return `Session done${sc === null ? '' : `: on target ${Math.round(sc * 100)}% of the time`}. ${progress.next ? `Next up: ${progress.next.workout.name}.` : 'That was the last one: plan finished!'}`;
 }
 function trainingUi() {
-  if (!$('i-workout')) return;
   const st = progress.state, next = progress.next, sel = $('i-workout');
-  const keep = sel.dataset.ready ? sel.value : progress.count && next ? `p${next.index}` : '';
+  if (!sel.options.length) sel.innerHTML = SESSIONS.map((x) => `<option value="p${x.index}"></option>`).join('');
+  if (!sel.dataset.ready || sel.selectedIndex < 0 || !sel.value) sel.value = `p${next ? next.index : 0}`;
   sel.dataset.ready = 1;
-  sel.innerHTML =
-    '<option value="">Free ride · no session</option>' +
-    (next ? `<optgroup label="${PLAN.name} · ${PLAN.about}"><option value="p${next.index}">Next up: week ${next.week}, session ${next.n} · ${esc(next.workout.name)}</option></optgroup>` : '') +
-    PLAN.weeks.map((w, wi) => `<optgroup label="Week ${wi + 1} · ${w.theme}">${SESSIONS.filter((x) => x.week === wi + 1).map((x) => `<option value="p${x.index}">${st.done[x.index] ? '✓ ' : ''}${x.n}. ${esc(x.workout.name)}</option>`).join('')}</optgroup>`).join('');
-  sel.value = keep;
-  if (sel.selectedIndex < 0) sel.value = '';
+  const pick = SESSIONS[+sel.value.slice(1)] || SESSIONS[0];
   $('tr-dots').innerHTML = PLAN.weeks.map((w, wi) => `<span title="Week ${wi + 1} · ${w.theme}">${[0, 1, 2].map((k) => `<i class="${st.done[wi * 3 + k] ? 'done' : next && next.index === wi * 3 + k ? 'next' : ''}"></i>`).join('')}</span>`).join('');
   const tests = st.tests, first = tests[0]?.ftp, lastT = tests.at(-1)?.ftp;
+  $('tr-ftp').textContent = settings.ftp;
   $('tr-status').textContent = !progress.count
-    ? `${PLAN.name}: ${PLAN.about.replace(' · ', ', ')}. Each session has one clear goal. Begin with the fitness test of week 1.`
-    : (next ? `${progress.count} of ${SESSIONS.length} sessions done · now in week ${next.week} of 12` : `All ${SESSIONS.length} sessions done. Chapeau!`) +
-      (tests.length > 1 ? ` · FTP ${first} → ${lastT} W (${lastT >= first ? '+' : '−'}${Math.abs(lastT - first)})` : lastT ? ` · FTP ${lastT} W` : '') +
+    ? `${PLAN.about}. Each session has one clear goal. Begin with the fitness test.`
+    : (next ? `${progress.count} of ${SESSIONS.length} sessions done · week ${next.week} of 12` : `All ${SESSIONS.length} sessions done. Chapeau!`) +
+      (tests.length > 1 ? ` · FTP ${first} → ${lastT} W (${lastT >= first ? '+' : '−'}${Math.abs(lastT - first)})` : '') +
       (lastNote ? ` · ${lastNote}` : '');
   $('tr-reset').hidden = !progress.count;
-  const pick = pickedSession();
-  $('tr-card').hidden = !pick;
-  $('i-length').disabled = !!pick;
-  if (pick) {
-    const w = pick.workout, top = Math.max(...w.steps.filter((x) => !x.abs).map((x) => x.from), 0);
-    $('tr-name').textContent = w.name;
-    $('tr-meta').textContent = `week ${pick.week}, session ${pick.n} · ${w.test ? '15 to 30' : minutes(w)} min`;
-    $('tr-why').textContent = w.why;
-    $('tr-chart').innerHTML = sessionSvg(w).svg;
-    const hints = [];
-    if (w.test) hints.push('Ride it rested. When it gets hard, hang on as long as you can: the last minute counts most.');
-    else {
-      hints.push(`With your FTP of ${settings.ftp} W the hardest part is at ${Math.round(top * settings.ftp)} W.`);
-      if (!tests.length) hints.push('You have not done the fitness test yet, so these watts are a guess.');
-    }
-    hints.push(!trainer.connected || trainer.canControl ? 'The trainer holds the watts for you: choose a light gear and just keep pedalling.' : 'This trainer cannot set resistance: shift gears to reach the target.');
-    if (route?.climb) hints.push('A flat route is nicer for a session than a mountain.');
-    $('tr-hint').textContent = hints.join(' ');
+  $('tr-weeks').innerHTML = PLAN.weeks
+    .map((w, wi) => `<div class="wk"><span><b>Week ${wi + 1}</b>${w.theme}</span><div>${SESSIONS.filter((x) => x.week === wi + 1).map((x) => `<button type="button" data-s="${x.index}" class="ses${st.done[x.index] ? ' done' : ''}${next && next.index === x.index ? ' next' : ''}${x.index === pick.index ? ' on' : ''}">${st.done[x.index] ? '✓ ' : ''}${esc(x.workout.name)}</button>`).join('')}</div></div>`)
+    .join('');
+  const w = pick.workout, top = Math.max(...w.steps.filter((x) => !x.abs).map((x) => x.from), 0);
+  $('tr-name').textContent = w.name;
+  $('tr-meta').textContent = `${next && next.index === pick.index ? 'next up · ' : ''}week ${pick.week}, session ${pick.n} · ${w.test ? '15 to 30' : minutes(w)} min`;
+  $('tr-why').textContent = w.why;
+  $('tr-chart').innerHTML = sessionSvg(w).svg;
+  const hints = [];
+  if (w.test) hints.push('Ride it rested. When it gets hard, hang on as long as you can: the last minute counts most.');
+  else {
+    hints.push(`With your FTP of ${settings.ftp} W the hardest part is at ${Math.round(top * settings.ftp)} W.`);
+    if (!tests.length) hints.push('You have not done the fitness test yet, so these watts are a guess.');
   }
+  hints.push(!trainer.connected || trainer.canControl ? 'The trainer holds the watts for you: choose a light gear and just keep pedalling.' : 'This trainer cannot set resistance: shift gears to reach the target.');
+  if (route?.climb) hints.push('A flat route is nicer for a session than a mountain.');
+  $('tr-hint').textContent = hints.join(' ');
   if (route && !ride.active && !countdown) $('s-go').textContent = goLabel();
 }
+$('tr-weeks').addEventListener('click', (e) => {
+  const i = e.target.closest('.ses')?.dataset.s;
+  if (i === undefined) return;
+  $('i-workout').value = `p${i}`;
+  trainingUi();
+  $('home-body').scrollTop = 0;
+});
 // the account remembers the rider: their numbers and where they are in the plan
 function applyAccount() {
   const pr = net.user?.meta?.profile;
@@ -511,7 +537,6 @@ $('wo-stop').onclick = () => {
   run.endTest();
   sessionEvent('test-over');
 };
-$('i-workout').addEventListener('change', trainingUi);
 $('tr-reset').onclick = () => {
   if (!confirm('Start the plan again from week 1? Your rides and test results are kept.')) return;
   progress.reset();
@@ -563,7 +588,7 @@ $('sum-again').onclick = () => {
     const next = progress.next;
     if (run.planIndex !== null && progress.state.done[run.planIndex]) {
       $('i-workout').dataset.ready = 1;
-      $('i-workout').value = next ? `p${next.index}` : '';
+      $('i-workout').value = `p${next ? next.index : 0}`;
     }
     run = null;
     $('wo').hidden = true;
@@ -666,7 +691,6 @@ function drawTrend(el, pts) {
   });
 }
 async function showHistory() {
-  $('history').hidden = false;
   $('hist-where').textContent = 'Loading…';
   const rides = await history.load();
   $('hist-where').textContent =
@@ -703,13 +727,11 @@ async function showHistory() {
       .map((r) => `<tr><td>${fmtDate(r.started_at)} · ${esc(routeName(r.route))}${r.best?.wo ? ` · ${esc(String(r.best.wo))}` : r.finished ? '' : ' (part)'}</td><td>${fmtTime(r.duration_s)}</td><td class="opt">${(r.distance_m / 1000).toFixed(1)}</td><td>${r.avg_power ?? '–'}</td><td class="opt">${r.np ?? '–'}</td><td class="opt">${r.avg_hr ?? '–'}</td><td><button class="x" data-id="${esc(String(r.id))}" title="Delete this ride">✕</button></td></tr>`)
       .join('');
 }
-$('s-history').onclick = showHistory;
 $('s-test').onclick = () => {
   testPower = testPower === null ? 200 : null;
   $('test-w').textContent = testPower ?? 0;
   deviceUi();
 };
-$('hist-close').onclick = () => ($('history').hidden = true);
 $('hist-rides').addEventListener('click', async (e) => {
   const id = e.target.closest('.x')?.dataset.id;
   if (!id || !confirm('Delete this ride for good?')) return;
@@ -732,16 +754,22 @@ const othersRiding = () => [...net.peers.values()].some((p) => here(p) && p.ridi
 function goLabel() {
   if (net.room && othersRiding()) return 'Join the ride';
   if (net.room) return net.peers.size ? 'Start for everyone' : 'Start ride (nobody else here yet)';
-  return canRide() ? (pickedSession() ? 'Start session' : 'Start ride') : 'Connect your trainer to start';
+  if (!canRide()) return 'Connect your trainer to start';
+  const pick = pickedSession();
+  return pick ? `Start session · ${pick.workout.name}` : `Start ride · ${route.name}`;
 }
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const mpStatus = (text, err = false) => {
-  $('mp-status').textContent = text;
-  $('mp-status').className = err ? 'hint err' : 'hint';
+  for (const id of ['mp-status', 'acc-status']) {
+    $(id).textContent = text;
+    $(id).className = err ? 'hint err' : 'hint';
+  }
 };
 function mpUi() {
-  $('mp').hidden = !net.available;
+  $('tab-together').hidden = $('acc').hidden = !net.available;
   $('mp-auth').hidden = !!net.user;
+  $('acc-in').hidden = !net.user;
+  $('mp-need').hidden = !!net.user;
   $('mp-room').hidden = !net.user;
   if (net.user) $('mp-user').textContent = net.user.name;
   $('mp-out').hidden = net.local;
@@ -828,7 +856,10 @@ net.onauth = () => {
   mpUi();
   const invited = cleanCode(params.get('room'));
   if (net.user && invited && !net.room) joinRoom(invited);
-  else if (invited && !net.user) mpStatus(`You are invited to room ${invited}. Sign in or create an account to join.`);
+  else if (invited && !net.user) {
+    mpStatus(`You are invited to room ${invited}. Sign in or create an account to join.`);
+    showTab('profile');
+  }
 };
 
 $('mp-auth').addEventListener('submit', async (e) => {
@@ -1107,6 +1138,7 @@ async function setRoute(id) {
   settings.route = id;
   saveSettings();
   $('i-route').value = id;
+  routeCards();
   const avg = ((route.E[route.n - 1] - route.E[0]) / route.total) * 100;
   let steep = 0;
   for (let d = 250; d < route.total; d += 100) steep = Math.max(steep, route.grade(d, 500));
@@ -1148,14 +1180,15 @@ const chooseRoute = (id) => (routeLoading = (routeLoading || Promise.resolve()).
 
 async function init() {
   if (!bluetoothAvailable()) {
-    $('s-foot').className = 'foot err';
+    $('s-foot').hidden = false;
     $('s-foot').textContent = 'This browser has no Web Bluetooth, so the trainer cannot connect. Open this page in Chrome or Edge.';
   }
   $('i-route').innerHTML = Object.keys(TYPES)
     .map((t) => `<optgroup label="${TYPES[t]}">${ROUTES.filter((r) => r.type === t).map((r) => `<option value="${r.id}">${esc(r.name)} · ${r.km} km · ${r.up} m↑</option>`).join('')}</optgroup>`)
     .join('');
   progress.load();
-  trainingUi();
+  if (params.get('autostart')) mode = params.get('session') ? 'training' : 'ride';
+  showTab(params.get('autostart') ? mode : settings.tab || 'ride');
   $('i-start').addEventListener('change', lengthOptions);
   $('i-route').addEventListener('change', () => chooseRoute($('i-route').value));
   if (params.get('wx')) settings.weather = $('i-weather').value = params.get('wx');
@@ -1164,7 +1197,7 @@ async function init() {
   $('s-go').onclick = goClicked;
   net.init().catch((e) => {
     console.error(e);
-    $('mp').hidden = false;
+    $('tab-together').hidden = $('acc').hidden = false;
     mpStatus(`Riding together is unavailable: ${e.message}`, true);
   });
   deviceUi();

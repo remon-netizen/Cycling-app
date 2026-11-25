@@ -101,109 +101,168 @@
 </div>
 
 <div id="start" class="overlay">
-  <div class="card">
-    <header>
+  <div class="card home">
+    <header class="home-head">
       <div class="logo">SOMMET</div>
-      <div class="tag">Ride real roads on your smart trainer</div>
+      <nav id="tabs" class="tabs">
+        <button data-tab="ride" type="button">Ride</button>
+        <button data-tab="training" type="button">Training</button>
+        <button data-tab="together" type="button" id="tab-together">Together</button>
+        <button data-tab="progress" type="button">Progress</button>
+        <button data-tab="profile" type="button">Profile</button>
+      </nav>
     </header>
 
-    <div class="route-card">
-      <div>
-        <div class="rc-title" id="rc-title">Mont Ventoux</div>
-        <div class="rc-sub" id="rc-sub">from Bédoin · the classic ascent</div>
-        <div class="rc-facts" id="rc-facts">Loading route…</div>
-      </div>
-      <canvas id="rc-profile"></canvas>
-    </div>
-    <div class="wx-line" id="rc-wx"></div>
-
-    <div class="grid2">
-      <div class="block">
-        <h3>Devices</h3>
-        <button id="s-trainer" class="btn">Connect trainer</button>
-        <div class="hint" id="s-trainer-status">Pedal a few strokes to wake your trainer, then connect. Works with Tacx, Wahoo, Elite, Saris, Zwift Hub and other Bluetooth trainers, and with power meters.</div>
-        <button id="s-hr" class="btn ghost">Connect heart rate strap</button>
-        <div class="hint" id="s-hr-status">Optional</div>
-      </div>
-      <div class="block">
-        <h3>Rider</h3>
-        <label>Rider <span><select id="i-gender" class="short"><option value="woman">Woman</option><option value="man">Man</option></select>
-          <input id="i-kit" type="color" title="Jersey colour"></span></label>
-        <label>Your weight <span><input id="i-weight" type="number" min="35" max="160" step="0.5"> kg</span></label>
-        <label>Bike weight <span><input id="i-bike" type="number" min="5" max="25" step="0.5"> kg</span></label>
-        <label>FTP <span><input id="i-ftp" type="number" min="40" max="500" step="1"> W</span></label>
-        <label>Gradient feel <span><input id="i-diff" type="number" min="0" max="100" step="5"> %</span></label>
-        <label>Route <span><select id="i-route"></select></span></label>
-        <label>Start at <span><select id="i-start"></select></span></label>
-        <label>Ride length <span><select id="i-length"></select></span></label>
-        <label>Graphics <span><select id="i-quality">
-          <option value="auto">Auto (adjusts itself)</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-        </select></span></label>
-        <label>Weather <span><select id="i-weather">
-          <option value="live">Live, as it is now</option>
-          <option value="mistral">Mistral day</option>
-          <option value="calm">No wind</option>
-        </select></span></label>
-      </div>
-    </div>
-
-    <div class="block training" id="tr">
-      <h3>Training</h3>
-      <label>Session <span><select id="i-workout" class="wide"></select></span></label>
-      <div class="tr-dots" id="tr-dots"></div>
-      <div class="hint" id="tr-status"></div>
-      <div class="tr-card" id="tr-card" hidden>
-        <div class="tr-head"><b id="tr-name"></b><span id="tr-meta"></span></div>
-        <div class="tr-why" id="tr-why"></div>
-        <div class="tr-chart" id="tr-chart"></div>
-        <div class="hint" id="tr-hint"></div>
-      </div>
-      <div class="hint"><button class="link quiet" id="tr-reset" type="button" hidden>Start the plan over</button></div>
-    </div>
-
-    <div class="block together" id="mp" hidden>
-      <h3>Ride together</h3>
-      <form id="mp-auth" hidden>
-        <div class="mp-row">
-          <input id="mp-name" type="text" placeholder="Your name" autocomplete="nickname" maxlength="20">
-          <input id="mp-email" type="email" placeholder="E-mail" autocomplete="email" required>
-          <input id="mp-pass" type="password" placeholder="Password" autocomplete="current-password" minlength="6" required>
-        </div>
-        <div class="mp-row">
-          <button class="btn small" id="mp-signin" type="submit">Sign in</button>
-          <button class="btn small ghost" id="mp-signup" type="button">Create account</button>
-        </div>
-      </form>
-      <div id="mp-room" hidden>
-        <div class="mp-row">
-          <span class="mp-who">Signed in as <b id="mp-user"></b></span>
-          <button class="link" id="mp-out" type="button">Sign out</button>
-        </div>
-        <div class="mp-row" id="mp-pick">
-          <input id="mp-code" type="text" placeholder="Room code" maxlength="12" autocomplete="off">
-          <button class="btn small" id="mp-join" type="button">Join room</button>
-          <button class="btn small ghost" id="mp-new" type="button">New room</button>
-        </div>
-        <div id="mp-in" hidden>
-          <div class="mp-row">
-            <span class="mp-who">Room <b id="mp-roomname"></b></span>
-            <button class="link" id="mp-copy" type="button">Copy invite link</button>
-            <button class="link" id="mp-leave" type="button">Leave room</button>
+    <div class="home-body" id="home-body">
+      <!-- free ride: pick a road -->
+      <section class="pane" data-pane="ride">
+        <div class="route-card">
+          <div>
+            <div class="rc-title" id="rc-title">Mont Ventoux</div>
+            <div class="rc-sub" id="rc-sub">from Bédoin · the classic ascent</div>
+            <div class="rc-facts" id="rc-facts">Loading route…</div>
           </div>
-          <div class="mp-peers" id="mp-peers"></div>
+          <canvas id="rc-profile"></canvas>
         </div>
-      </div>
-      <div class="hint" id="mp-status"></div>
+        <div class="wx-line" id="rc-wx"></div>
+        <div class="opts">
+          <label class="opt">Start at<select id="i-start"></select></label>
+          <label class="opt">Ride length<select id="i-length"></select></label>
+          <label class="opt">Weather<select id="i-weather">
+            <option value="live">Live, as it is now</option>
+            <option value="mistral">Mistral day</option>
+            <option value="calm">No wind</option>
+          </select></label>
+        </div>
+        <div id="route-list"></div>
+      </section>
+
+      <!-- training plan -->
+      <section class="pane" data-pane="training" hidden>
+        <div class="tr-top">
+          <div>
+            <h2>Winter plan</h2>
+            <div class="hint" id="tr-status"></div>
+          </div>
+          <div class="tr-ftp"><b id="tr-ftp">–</b><span>W FTP</span></div>
+        </div>
+        <div class="tr-dots" id="tr-dots"></div>
+        <div class="tr-card" id="tr-card">
+          <div class="tr-head"><b id="tr-name"></b><span id="tr-meta"></span></div>
+          <div class="tr-why" id="tr-why"></div>
+          <div class="tr-chart" id="tr-chart"></div>
+          <div class="hint" id="tr-hint"></div>
+          <label class="opt inline">Ride it on<select id="i-route"></select></label>
+        </div>
+        <h3 class="gap">All sessions</h3>
+        <div id="tr-weeks" class="tr-weeks"></div>
+        <select id="i-workout" hidden></select>
+        <div class="hint"><button class="link quiet" id="tr-reset" type="button" hidden>Start the plan over</button></div>
+      </section>
+
+      <!-- riding together -->
+      <section class="pane" data-pane="together" hidden>
+        <div id="mp">
+          <h2>Ride together</h2>
+          <div class="hint lead">Open a room, send the invite link, and you see each other on the road. Everyone rides on their own trainer.</div>
+          <div class="hint lead" id="mp-need" hidden>You need an account for this. <button class="link" type="button" data-go="profile">Sign in or create one</button></div>
+          <div id="mp-room" hidden>
+            <div class="mp-row" id="mp-pick">
+              <input id="mp-code" type="text" placeholder="Room code" maxlength="12" autocomplete="off">
+              <button class="btn small" id="mp-join" type="button">Join room</button>
+              <button class="btn small ghost" id="mp-new" type="button">New room</button>
+            </div>
+            <div id="mp-in" hidden>
+              <div class="mp-row">
+                <span class="mp-who">Room <b id="mp-roomname"></b></span>
+                <button class="link" id="mp-copy" type="button">Copy invite link</button>
+                <button class="link" id="mp-leave" type="button">Leave room</button>
+              </div>
+              <div class="mp-peers" id="mp-peers"></div>
+            </div>
+          </div>
+          <div class="hint" id="mp-status"></div>
+        </div>
+      </section>
+
+      <!-- progress -->
+      <section class="pane" data-pane="progress" id="history" hidden>
+        <h2>My progress</h2>
+        <div class="hint" id="hist-where"></div>
+        <div id="hist-empty" class="hint" hidden>No rides yet. Finish a ride on your trainer and it will show up here.</div>
+        <div id="hist-body">
+          <div class="tiles" id="hist-tiles"></div>
+          <h3>Power over time</h3>
+          <div class="hint" id="hist-chart-sub"></div>
+          <div class="chart" id="hist-chart"></div>
+          <h3>Best power</h3>
+          <table class="tbl" id="hist-bests"></table>
+          <h3>Climbs</h3>
+          <table class="tbl" id="hist-routes"></table>
+          <h3>Rides</h3>
+          <table class="tbl" id="hist-rides"></table>
+        </div>
+      </section>
+
+      <!-- profile -->
+      <section class="pane" data-pane="profile" hidden>
+        <div class="grid2">
+          <div class="block">
+            <h3>Rider</h3>
+            <label>Rider <span><select id="i-gender" class="short"><option value="woman">Woman</option><option value="man">Man</option></select>
+              <input id="i-kit" type="color" title="Jersey colour"></span></label>
+            <label>Your weight <span><input id="i-weight" type="number" min="35" max="160" step="0.5"> kg</span></label>
+            <label>Bike weight <span><input id="i-bike" type="number" min="5" max="25" step="0.5"> kg</span></label>
+            <label>FTP <span><input id="i-ftp" type="number" min="40" max="500" step="1"> W</span></label>
+            <div class="hint">FTP is the power you can hold for about an hour. The fitness test in Training measures it for you.</div>
+          </div>
+          <div class="block">
+            <h3>Ride feel and picture</h3>
+            <label>Gradient feel <span><input id="i-diff" type="number" min="0" max="100" step="5"> %</span></label>
+            <div class="hint">100% feels like the real slope. Lower makes hills gentler on the legs.</div>
+            <label>Graphics <span><select id="i-quality">
+              <option value="auto">Auto (adjusts itself)</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select></span></label>
+          </div>
+        </div>
+        <div class="block account" id="acc">
+          <h3>Account</h3>
+          <form id="mp-auth" hidden>
+            <div class="mp-row">
+              <input id="mp-name" type="text" placeholder="Your name" autocomplete="nickname" maxlength="20">
+              <input id="mp-email" type="email" placeholder="E-mail" autocomplete="email" required>
+              <input id="mp-pass" type="password" placeholder="Password" autocomplete="current-password" minlength="6" required>
+            </div>
+            <div class="mp-row">
+              <button class="btn small" id="mp-signin" type="submit">Sign in</button>
+              <button class="btn small ghost" id="mp-signup" type="button">Create account</button>
+            </div>
+            <div class="hint">An account keeps your rides, your plan and your rider settings, and lets you ride together.</div>
+          </form>
+          <div class="mp-row" id="acc-in" hidden>
+            <span class="mp-who">Signed in as <b id="mp-user"></b></span>
+            <button class="link" id="mp-out" type="button">Sign out</button>
+          </div>
+          <div class="hint" id="acc-status"></div>
+        </div>
+        <div class="foot credit">Terrain imagery: Sentinel-2 cloudless by <a href="https://s2maps.eu" target="_blank" rel="noopener">EOX</a> (CC BY-NC-SA 4.0), contains modified Copernicus Sentinel data. Weather: Open-Meteo.</div>
+        <div class="foot"><button class="link quiet" id="s-test" type="button">Test without a trainer</button></div>
+      </section>
     </div>
 
-    <button id="s-go" class="btn primary" disabled>Loading…</button>
-    <button id="s-history" class="btn ghost">My rides and progress</button>
-    <div class="foot" id="s-foot"></div>
-    <div class="foot credit">Terrain imagery: Sentinel-2 cloudless by <a href="https://s2maps.eu" target="_blank" rel="noopener">EOX</a> (CC BY-NC-SA 4.0), contains modified Copernicus Sentinel data. Weather: Open-Meteo.</div>
-    <div class="foot"><button class="link quiet" id="s-test" type="button">Test without a trainer</button></div>
+    <footer class="home-foot">
+      <div class="foot err" id="s-foot" hidden></div>
+      <div class="dev">
+        <button id="s-trainer" class="btn">Connect trainer</button>
+        <button id="s-hr" class="btn">Connect heart rate</button>
+        <button id="s-go" class="btn primary" disabled>Loading…</button>
+      </div>
+      <div class="hint" id="s-trainer-status">Pedal a few strokes to wake your trainer, then connect. Works with Tacx, Wahoo, Elite, Saris, Zwift Hub and other Bluetooth trainers.</div>
+      <div class="hint" id="s-hr-status" hidden></div>
+    </footer>
   </div>
 </div>
 
@@ -218,31 +277,6 @@
     <button id="sum-tcx" class="btn primary">Download ride (.tcx)</button>
     <button id="sum-continue" class="btn ghost">Keep riding</button>
     <button id="sum-again" class="btn ghost">Back to start</button>
-  </div>
-</div>
-
-<div id="history" class="overlay" hidden>
-  <div class="card">
-    <header class="hist-head">
-      <div>
-        <div class="logo small">MY PROGRESS</div>
-        <div class="tag" id="hist-where"></div>
-      </div>
-      <button id="hist-close" class="btn small">Close</button>
-    </header>
-    <div id="hist-empty" class="hint" hidden>No rides yet. Finish a ride on your trainer and it will show up here.</div>
-    <div id="hist-body">
-      <div class="tiles" id="hist-tiles"></div>
-      <h3>Power over time</h3>
-      <div class="hint" id="hist-chart-sub"></div>
-      <div class="chart" id="hist-chart"></div>
-      <h3>Best power</h3>
-      <table class="tbl" id="hist-bests"></table>
-      <h3>Climbs</h3>
-      <table class="tbl" id="hist-routes"></table>
-      <h3>Rides</h3>
-      <table class="tbl" id="hist-rides"></table>
-    </div>
   </div>
 </div>
 
