@@ -133,6 +133,7 @@ export class Trainer extends Device {
     this._fec = null;
     this._wahoo = null;
     this._crank = null;
+    this._erg = false;
     this._queue = Promise.resolve();
   }
 
@@ -217,9 +218,26 @@ export class Trainer extends Device {
     return this._queue;
   }
 
+  // Tell the trainer to hold a power whatever the cadence ("ERG mode"), for training sessions.
+  setPower(watts) {
+    if (!this.connected) return;
+    const w = clamp16(watts);
+    if (this._control) this._write(this._control, [0x05, ...le16(w)]);
+    else if (this._fec) {
+      const msg = [0xa4, 0x09, 0x4f, 0x05, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff, ...le16(clamp16(w * 4))]; // quarter watts
+      msg.push(msg.reduce((a, b) => a ^ b, 0));
+      this._write(this._fec, msg);
+    } else if (this._wahoo) this._write(this._wahoo, [0x42, ...le16(w)]);
+    this._erg = true;
+  }
+
   // Tell the trainer what slope to simulate (percent).
   setGrade(gradePct, crr = 0.004, cw = 0.51) {
     if (!this.connected) return;
+    if (this._erg) {
+      this._erg = false;
+      this._wahooSim(); // Wahoo's own protocol has to be put back in slope mode
+    }
     if (this._control) {
       const g = Math.round(gradePct * 100);
       this._write(this._control, [0x11, 0, 0, g & 0xff, (g >> 8) & 0xff, Math.round(crr / 0.0001), Math.round(cw / 0.01)]);

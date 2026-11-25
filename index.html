@@ -59,6 +59,27 @@
     <div class="sub" id="h-wx"></div>
   </section>
 
+  <section class="panel wo" id="wo" hidden>
+    <div class="wo-top"><b id="wo-name"></b><span id="wo-count"></span></div>
+    <div class="wo-main">
+      <div class="wo-num"><span class="v" id="wo-target">0</span><span class="u">W target</span></div>
+      <div class="wo-mid">
+        <div id="wo-text"></div>
+        <div class="wo-gauge"><i id="wo-mark"></i></div>
+        <div class="wo-cue" id="wo-cue"></div>
+      </div>
+      <div class="wo-num right"><span class="v" id="wo-left">0:00</span><span class="u">left</span></div>
+    </div>
+    <div class="wo-chart"><div id="wo-svg"></div><i id="wo-cursor"></i></div>
+    <div class="wo-foot">
+      <span id="wo-next"></span>
+      <span class="spacer"></span>
+      <span id="wo-adjust"><button class="mini" id="wo-less" title="Make it easier (−)">−</button><span id="wo-scale">100%</span><button class="mini" id="wo-more" title="Make it harder (+)">+</button></span>
+      <button class="mini" id="wo-erg" title="Let the trainer hold the target watts for you (E)"></button>
+      <button class="mini strong" id="wo-stop" hidden>I can't keep up</button>
+    </div>
+  </section>
+
   <div id="toast" class="toast" hidden></div>
   <div id="paused" class="paused" hidden>Start pedalling</div>
 
@@ -110,7 +131,7 @@
           <input id="i-kit" type="color" title="Jersey colour"></span></label>
         <label>Your weight <span><input id="i-weight" type="number" min="35" max="160" step="0.5"> kg</span></label>
         <label>Bike weight <span><input id="i-bike" type="number" min="5" max="25" step="0.5"> kg</span></label>
-        <label>FTP <span><input id="i-ftp" type="number" min="80" max="500" step="5"> W</span></label>
+        <label>FTP <span><input id="i-ftp" type="number" min="40" max="500" step="1"> W</span></label>
         <label>Gradient feel <span><input id="i-diff" type="number" min="0" max="100" step="5"> %</span></label>
         <label>Route <span><select id="i-route"></select></span></label>
         <label>Start at <span><select id="i-start"></select></span></label>
@@ -127,6 +148,20 @@
           <option value="calm">No wind</option>
         </select></span></label>
       </div>
+    </div>
+
+    <div class="block training" id="tr">
+      <h3>Training</h3>
+      <label>Session <span><select id="i-workout" class="wide"></select></span></label>
+      <div class="tr-dots" id="tr-dots"></div>
+      <div class="hint" id="tr-status"></div>
+      <div class="tr-card" id="tr-card" hidden>
+        <div class="tr-head"><b id="tr-name"></b><span id="tr-meta"></span></div>
+        <div class="tr-why" id="tr-why"></div>
+        <div class="tr-chart" id="tr-chart"></div>
+        <div class="hint" id="tr-hint"></div>
+      </div>
+      <div class="hint"><button class="link quiet" id="tr-reset" type="button" hidden>Start the plan over</button></div>
     </div>
 
     <div class="block together" id="mp" hidden>

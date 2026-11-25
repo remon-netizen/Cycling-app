@@ -8,15 +8,23 @@ import { loadImagery } from './imagery.js';
 import { History, buildRecord, summarise, improvements, WINDOW_NAMES } from './history.js';
 import { RouteProfile, AheadProfile, MiniMap, gradeColor } from './hud.js';
 import { buildTcx, download } from './tcx.js';
+import { PLAN, SESSIONS, Run, Progress, sessionSvg, minutes } from './training.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 
 // ---------- settings ----------
 const settings = Object.assign(
-  { weight: 75, bike: 8.5, ftp: 220, difficulty: 100, weather: 'live', gender: 'man', kit: '#e8412c', quality: 'auto', autoLevel: 'high' },
+  { weight: 75, bike: 8.5, ftp: 220, difficulty: 100, weather: 'live', gender: 'man', kit: '#e8412c', quality: 'auto', autoLevel: 'high', erg: true },
   JSON.parse(localStorage.getItem('sommet.settings') || '{}')
 );
+// Settings live in this browser; the rider's own numbers also go to their account,
+// so two people can share one laptop.
+const PROFILE = ['weight', 'bike', 'ftp', 'gender', 'kit'];
+function saveSettings() {
+  localStorage.setItem('sommet.settings', JSON.stringify(settings));
+  if (net.user && !net.local) net.saveMeta({ profile: Object.fromEntries(PROFILE.map((k) => [k, settings[k]])) });
+}
 const fields = { weight: $('i-weight'), bike: $('i-bike'), ftp: $('i-ftp'), difficulty: $('i-diff') };
 for (const [key, el] of Object.entries(fields)) {
   el.value = settings[key];
@@ -24,7 +32,8 @@ for (const [key, el] of Object.entries(fields)) {
     const v = parseFloat(el.value);
     if (isFinite(v)) settings[key] = Math.min(+el.max, Math.max(+el.min, v));
     el.value = settings[key];
-    localStorage.setItem('sommet.settings', JSON.stringify(settings));
+    saveSettings();
+    if (key === 'ftp') trainingUi();
   });
 }
 const totalMass = () => settings.weight + settings.bike;
@@ -47,13 +56,16 @@ const botWind = { draft: 0 }, noDraft = {}, gaps = [];
 const net = new Net();
 const remotes = new Map(); // peer id -> 3D rider
 const history = new History(net);
+const progress = new Progress(net);
+let run = null; // the training session being ridden, if any
+let lastNote = '';
 
 const ride = {
   active: false, finished: false, startDist: 0, startDate: null,
   dist: 0, endDist: Infinity, v: 0, crank: 0, power: 0, cadence: 0, hr: 0, shownPower: 0,
   moving: 0, wall: 0, climbed: 0, energy: 0, powerSum: 0, hrSum: 0, hrTime: 0, cadSum: 0, cadTime: 0,
   samples: [], eta: Infinity, recent: [],
-  nextLandmark: 0, sentGrade: null, sentAt: 0, secAcc: 0, etaAcc: 0, windWork: 0, draftWork: 0, braking: false, wasForest: null, trainerTime: 0, saved: false,
+  nextLandmark: 0, sentGrade: null, sentPower: null, sentAt: 0, secAcc: 0, etaAcc: 0, windWork: 0, draftWork: 0, braking: false, wasForest: null, trainerTime: 0, saved: false,
 };
 const bots = [];
 
@@ -106,15 +118,16 @@ function deviceUi() {
   if (hrm.connected) $('s-hr-status').textContent = 'Connected';
   if (route && !ride.active && !countdown) $('s-go').textContent = goLabel();
   $('s-go').classList.toggle('waiting', !canRide());
-  $('test-chip').hidden = testPower === null || trainer.connected || !ride.active;
+  $('test-chip').hidden = testPower === null || trainer.connected || !ride.active || !!run;
   $('test-w').textContent = testPower ?? 0;
   $('s-test').textContent = testPower === null ? 'Test without a trainer' : 'Test mode is on · turn off';
 }
 trainer.onstatus = () => {
-  ride.sentGrade = null;
+  ride.sentGrade = ride.sentPower = null;
   if (trainer.connected) trainer.setRider(totalMass());
   deviceUi();
   if (ride.active && !trainer.connected && trainer._wanted) toast('Trainer connection lost, reconnecting…');
+  if (!ride.active) trainingUi();
 };
 hrm.onstatus = deviceUi;
 
@@ -150,12 +163,16 @@ document.addEventListener('visibilitychange', () => !document.hidden && ride.act
 
 // ---------- ride ----------
 function startRide(startDist, length = +$('i-length').value || 0) {
+  const pick = pickedSession();
+  run = pick ? new Run(pick.workout, settings.ftp, pick.index) : null;
+  if (run) length = 0; // a session ends on time, not on distance
+  lastNote = '';
   // a chosen ride length ends the ride before the end of the route
   ride.endDist = length > 0 ? Math.min(route.total, startDist + length) : route.total;
   Object.assign(ride, {
     active: true, finished: false, startDist, startDate: new Date(), dist: startDist, v: 0,
     moving: 0, wall: 0, climbed: 0, energy: 0, powerSum: 0, hrSum: 0, hrTime: 0, cadSum: 0, cadTime: 0,
-    samples: [], recent: [], sentGrade: null, secAcc: 0, etaAcc: 5, windWork: 0, draftWork: 0, braking: false, wasForest: null, trainerTime: 0, saved: false,
+    samples: [], recent: [], sentGrade: null, sentPower: null, secAcc: 0, etaAcc: 5, windWork: 0, draftWork: 0, braking: false, wasForest: null, trainerTime: 0, saved: false,
   });
   ride.nextLandmark = route.landmarks.findIndex((l) => l.dist > startDist + 50);
   const wkg = [2.1, 2.6, 2.9, 3.2, 3.5, 4.0], offs = [18, 45, 90, 160, 260, 420];
@@ -167,7 +184,13 @@ function startRide(startDist, length = +$('i-length').value || 0) {
   $('hud').hidden = false;
   deviceUi();
   keepAwake();
-  toast(`${route.name} · ${((ride.endDist - startDist) / 1000).toFixed(1)} km ${toGo()}. ${route.climb ? 'Bon courage!' : 'Have a good ride!'}`);
+  $('wo').hidden = !run;
+  $('hud').classList.toggle('training', !!run);
+  $('h-eta-label').textContent = run ? (run.test ? 'test' : 'session left') : route.climb ? 'to the top' : 'to go';
+  if (run) {
+    drawRunChart();
+    toast(run.test ? 'Fitness test: warm up first, then it gets a little harder every minute' : `${run.w.name} · ${minutes(run.w)} minutes. Have a good session!`, 7000);
+  } else toast(`${route.name} · ${((ride.endDist - startDist) / 1000).toFixed(1)} km ${toGo()}. ${route.climb ? 'Bon courage!' : 'Have a good ride!'}`);
 }
 
 function readInputs() {
@@ -179,7 +202,7 @@ function readInputs() {
     ride.power = 0;
     ride.cadence = 0;
   } else {
-    ride.power = testPower || 0;
+    ride.power = run && !run.done ? run.watts() : testPower || 0; // test mode follows the session
     ride.cadence = ride.power > 0 ? 68 + Math.min(24, ride.power / 14) : 0;
   }
   ride.hr = hrm.fresh ? hrm.bpm : 0;
@@ -221,6 +244,17 @@ function simulate(dt) {
       if (ride.cadence > 0) { ride.cadSum += ride.cadence * h; ride.cadTime += h; }
     }
     if (ride.hr > 0) { ride.hrSum += ride.hr * h; ride.hrTime += h; }
+    if (run) {
+      if (ride.dist >= ride.endDist && !run.done) {
+        // end of the road before the end of the session: start the route again
+        ride.startDist -= ride.dist;
+        ride.dist = 0;
+        ride.nextLandmark = 0;
+        world.snapCamera();
+      }
+      const ev = run.advance(h, ride.power, ride.cadence);
+      if (ev) sessionEvent(ev);
+    }
     for (const b of bots) {
       if (b.dist >= route.total) continue;
       weather.at(b.dist, ride.wall, botWind);
@@ -241,9 +275,10 @@ function simulate(dt) {
     ride.secAcc -= 1;
     everySecond();
   }
-  if (!ride.finished && ride.dist >= ride.endDist) {
+  if (!ride.finished && (run ? run.done : ride.dist >= ride.endDist)) {
     ride.finished = true;
     trainer.setGrade(0, CRR);
+    if (run) lastNote = closeSession();
     showSummary(true);
     saveRide();
   }
@@ -258,16 +293,8 @@ function everySecond() {
   ride.recent.push(ride.power);
   if (ride.recent.length > 60) ride.recent.shift();
 
-  // resistance: follow the slope just ahead of the wheel
-  const now = performance.now();
-  // a headwind is felt as a little extra slope, a tailwind as a little less
-  const windGrade = airAsGrade(ride.v, totalMass(), p.y, wind, route.grade(ride.dist), ride.power);
-  const g = Math.max(-5, Math.min(16, ((route.grade(ride.dist + 3, 20) + windGrade) * settings.difficulty) / 100));
-  if (trainer.connected && !ride.finished && (ride.sentGrade === null || Math.abs(g - ride.sentGrade) >= 0.1 || now - ride.sentAt > 4000)) {
-    trainer.setGrade(g, CRR);
-    ride.sentGrade = g;
-    ride.sentAt = now;
-  }
+  control(p.y);
+  if (run && !run.done && !run.inRamp && run.left <= 3.5 && run.left > 0.5 && run.next()) beep(620, 0.09);
 
   ride.etaAcc += 1;
   if (ride.etaAcc >= 5) {
@@ -295,12 +322,211 @@ function everySecond() {
   }
 }
 
+// Resistance. In a training session the trainer holds the target watts; otherwise
+// it follows the slope just ahead of the wheel.
+const ergOn = () => !!(run && !run.done && settings.erg && trainer.canControl);
+function control(ele = route.ele(ride.dist)) {
+  if (!trainer.connected || ride.finished) return;
+  const now = performance.now();
+  if (ergOn()) {
+    const w = run.watts();
+    if (ride.sentPower !== w || now - ride.sentAt > 4000) {
+      trainer.setPower(w);
+      ride.sentPower = w;
+      ride.sentGrade = null;
+      ride.sentAt = now;
+    }
+    return;
+  }
+  // a headwind is felt as a little extra slope, a tailwind as a little less
+  const windGrade = airAsGrade(ride.v, totalMass(), ele, wind, route.grade(ride.dist), ride.power);
+  const g = Math.max(-5, Math.min(16, ((route.grade(ride.dist + 3, 20) + windGrade) * settings.difficulty) / 100));
+  if (ride.sentGrade === null || Math.abs(g - ride.sentGrade) >= 0.1 || now - ride.sentAt > 4000) {
+    trainer.setGrade(g, CRR);
+    ride.sentGrade = g;
+    ride.sentPower = null;
+    ride.sentAt = now;
+  }
+}
+
+// ---------- training sessions ----------
+const KIND = { warm: 'Warm-up', easy: 'Easy', work: 'Effort', steady: 'Steady', cool: 'Cool-down' };
+const pickedSession = () => {
+  const v = $('i-workout').value;
+  return v ? SESSIONS[+v.slice(1)] || null : null;
+};
+let audio = null;
+function beep(freq, len) {
+  try {
+    audio ||= new (window.AudioContext || window.webkitAudioContext)();
+    const o = audio.createOscillator(), g = audio.createGain(), t = audio.currentTime;
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.18, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+    o.connect(g).connect(audio.destination);
+    o.start(t);
+    o.stop(t + len + 0.02);
+  } catch {}
+}
+function drawRunChart() {
+  const c = sessionSvg(run.w, { steps: run.steps, height: 40 });
+  run.chartTotal = c.total;
+  $('wo-svg').innerHTML = c.svg;
+  $('wo-svg').style.height = '100%';
+}
+function sessionEvent(ev) {
+  if (ev === 'done') return beep(880, 0.5);
+  if (ev === 'test-over') {
+    drawRunChart();
+    beep(880, 0.5);
+    toast(run.result.ftp ? `Test done: your FTP is ${run.result.ftp} W. Now spin the legs out.` : 'Test stopped. Spin the legs out.', 9000);
+  } else {
+    beep(run.inRamp ? 700 : 880, run.inRamp ? 0.12 : 0.3);
+    const s = run.step;
+    if (!run.inRamp) toast(`${run.count() || KIND[s.kind]} · ${fmtTime(s.dur)} at ${run.wattsOf(s)} W`, 5000);
+  }
+  ride.sentPower = null;
+  control();
+}
+// Wrap up a session: count it for the plan, take over a test result. Returns a line for the rider.
+function closeSession() {
+  if (!run || run.closed) return lastNote;
+  run.closed = true;
+  const real = realRide();
+  if (run.test) {
+    if (!run.result && run.inRamp) run.endTest();
+    const r = run.result;
+    if (!r || !r.ftp) return 'The test was too short for a result: ride the ramp for at least a minute.';
+    if (!real) return `Test mode: with a trainer this would set your FTP to ${r.ftp} W.`;
+    const prev = progress.state.tests.at(-1)?.ftp;
+    settings.ftp = r.ftp;
+    fields.ftp.value = r.ftp;
+    saveSettings();
+    progress.setFtp(r.ftp);
+    if (run.planIndex !== null) progress.complete(run.planIndex, null);
+    const d = prev ? r.ftp - prev : 0;
+    return `Your FTP is ${r.ftp} W${prev ? (d > 0 ? `: up ${d} W since the last test!` : d < 0 ? ` (${-d} W lower than last time: a tired day happens)` : ', the same as last time') : ''}. Your best minute was ${r.best} W. Every session now uses this number.`;
+  }
+  const part = run.elapsed / run.total;
+  if (part < 0.8) return `You rode ${Math.round(part * 100)}% of this session. It counts for the plan from 80%.`;
+  if (!real) return 'Test mode: this session is not counted for the plan.';
+  if (run.planIndex !== null) progress.complete(run.planIndex, run.score);
+  const sc = run.score;
+  return `Session done${sc === null ? '' : `: on target ${Math.round(sc * 100)}% of the time`}. ${progress.next ? `Next up: ${progress.next.workout.name}.` : 'That was the last one: plan finished!'}`;
+}
+function trainingUi() {
+  if (!$('i-workout')) return;
+  const st = progress.state, next = progress.next, sel = $('i-workout');
+  const keep = sel.dataset.ready ? sel.value : progress.count && next ? `p${next.index}` : '';
+  sel.dataset.ready = 1;
+  sel.innerHTML =
+    '<option value="">Free ride · no session</option>' +
+    (next ? `<optgroup label="${PLAN.name} · ${PLAN.about}"><option value="p${next.index}">Next up: week ${next.week}, session ${next.n} · ${esc(next.workout.name)}</option></optgroup>` : '') +
+    PLAN.weeks.map((w, wi) => `<optgroup label="Week ${wi + 1} · ${w.theme}">${SESSIONS.filter((x) => x.week === wi + 1).map((x) => `<option value="p${x.index}">${st.done[x.index] ? '✓ ' : ''}${x.n}. ${esc(x.workout.name)}</option>`).join('')}</optgroup>`).join('');
+  sel.value = keep;
+  if (sel.selectedIndex < 0) sel.value = '';
+  $('tr-dots').innerHTML = PLAN.weeks.map((w, wi) => `<span title="Week ${wi + 1} · ${w.theme}">${[0, 1, 2].map((k) => `<i class="${st.done[wi * 3 + k] ? 'done' : next && next.index === wi * 3 + k ? 'next' : ''}"></i>`).join('')}</span>`).join('');
+  const tests = st.tests, first = tests[0]?.ftp, lastT = tests.at(-1)?.ftp;
+  $('tr-status').textContent = !progress.count
+    ? `${PLAN.name}: ${PLAN.about.replace(' · ', ', ')}. Each session has one clear goal. Begin with the fitness test of week 1.`
+    : (next ? `${progress.count} of ${SESSIONS.length} sessions done · now in week ${next.week} of 12` : `All ${SESSIONS.length} sessions done. Chapeau!`) +
+      (tests.length > 1 ? ` · FTP ${first} → ${lastT} W (${lastT >= first ? '+' : '−'}${Math.abs(lastT - first)})` : lastT ? ` · FTP ${lastT} W` : '') +
+      (lastNote ? ` · ${lastNote}` : '');
+  $('tr-reset').hidden = !progress.count;
+  const pick = pickedSession();
+  $('tr-card').hidden = !pick;
+  $('i-length').disabled = !!pick;
+  if (pick) {
+    const w = pick.workout, top = Math.max(...w.steps.filter((x) => !x.abs).map((x) => x.from), 0);
+    $('tr-name').textContent = w.name;
+    $('tr-meta').textContent = `week ${pick.week}, session ${pick.n} · ${w.test ? '15 to 30' : minutes(w)} min`;
+    $('tr-why').textContent = w.why;
+    $('tr-chart').innerHTML = sessionSvg(w).svg;
+    const hints = [];
+    if (w.test) hints.push('Ride it rested. When it gets hard, hang on as long as you can: the last minute counts most.');
+    else {
+      hints.push(`With your FTP of ${settings.ftp} W the hardest part is at ${Math.round(top * settings.ftp)} W.`);
+      if (!tests.length) hints.push('You have not done the fitness test yet, so these watts are a guess.');
+    }
+    hints.push(!trainer.connected || trainer.canControl ? 'The trainer holds the watts for you: choose a light gear and just keep pedalling.' : 'This trainer cannot set resistance: shift gears to reach the target.');
+    if (route?.climb) hints.push('A flat route is nicer for a session than a mountain.');
+    $('tr-hint').textContent = hints.join(' ');
+  }
+  if (route && !ride.active && !countdown) $('s-go').textContent = goLabel();
+}
+// the account remembers the rider: their numbers and where they are in the plan
+function applyAccount() {
+  const pr = net.user?.meta?.profile;
+  if (pr) {
+    for (const k of PROFILE) if (pr[k] !== undefined && pr[k] !== null) settings[k] = pr[k];
+    for (const [key, el] of Object.entries(fields)) el.value = settings[key];
+    $('i-gender').value = settings.gender;
+    $('i-kit').value = settings.kit;
+    localStorage.setItem('sommet.settings', JSON.stringify(settings));
+    world?.setPlayerLook(myLook());
+  } else if (net.user) saveSettings();
+  progress.load();
+  lastNote = '';
+  trainingUi();
+}
+function updateSessionHud() {
+  const s = run.step, target = run.watts(), n = run.next();
+  $('wo-name').textContent = run.w.name;
+  $('wo-count').textContent = run.test ? (run.result ? 'Result: ' + (run.result.ftp ? `FTP ${run.result.ftp} W` : 'too short') : run.inRamp ? 'Hang on as long as you can' : 'Warm-up') : run.count() || KIND[s.kind];
+  $('wo-target').textContent = target;
+  $('wo-left').textContent = fmtTime(Math.ceil(run.left));
+  $('wo-text').textContent = s.text + (s.cad ? ` · ${s.cad[0]} to ${s.cad[1]} rpm` : '');
+  const diff = (ride.shownPower - target) / target, ok = Math.abs(ride.shownPower - target) <= Math.max(8, target * 0.08);
+  $('wo-mark').style.left = `${Math.max(0, Math.min(100, 50 + diff * 100))}%`;
+  let cue = ride.power < 1 ? 'Pedal to start the clock' : ok ? 'On target' : diff < -0.2 ? 'Push harder' : diff < 0 ? 'A little more' : diff > 0.2 ? 'Too hard: ease off' : 'Ease off a little';
+  if (s.cad && ride.cadence > 0 && ride.power >= 1) cue = ride.cadence < s.cad[0] ? `Spin faster: ${s.cad[0]}+ rpm` : ride.cadence > s.cad[1] ? `Slower legs: under ${s.cad[1]} rpm` : cue;
+  else if (ergOn() && ride.power >= 1 && !ok && ride.cadence > 0 && ride.cadence < 60) cue = 'Pedal a bit faster';
+  $('wo-cue').textContent = cue;
+  $('wo-cursor').style.left = `${Math.min(100, (run.elapsed / run.chartTotal) * 100)}%`;
+  $('wo-next').textContent = run.inRamp ? `Next minute: ${n ? run.wattsOf(n) : target} W` : n ? `Next: ${KIND[n.kind].toLowerCase()} · ${fmtTime(n.dur)} at ${run.wattsOf(n)} W` : 'Last part';
+  $('wo-adjust').hidden = run.test;
+  $('wo-scale').textContent = `${Math.round(run.scale * 100)}%`;
+  $('wo-erg').hidden = !trainer.canControl;
+  $('wo-erg').textContent = `Trainer holds the watts: ${settings.erg ? 'on' : 'off'}`;
+  $('wo-stop').hidden = !run.inRamp;
+}
+const scaleRun = (d) => {
+  if (!run || run.test) return;
+  run.scale = Math.max(0.6, Math.min(1.3, Math.round((run.scale + d) * 100) / 100));
+  ride.sentPower = null;
+  control();
+};
+$('wo-less').onclick = () => scaleRun(-0.05);
+$('wo-more').onclick = () => scaleRun(0.05);
+$('wo-erg').onclick = () => {
+  settings.erg = !settings.erg;
+  saveSettings();
+  ride.sentPower = ride.sentGrade = null;
+  control();
+  toast(settings.erg ? 'The trainer holds the target watts' : 'You set the watts yourself: the road decides the resistance', 4000);
+};
+$('wo-stop').onclick = () => {
+  if (!run?.inRamp) return;
+  run.endTest();
+  sessionEvent('test-over');
+};
+$('i-workout').addEventListener('change', trainingUi);
+$('tr-reset').onclick = () => {
+  if (!confirm('Start the plan again from week 1? Your rides and test results are kept.')) return;
+  progress.reset();
+  $('i-workout').value = '';
+  trainingUi();
+};
+
 function showSummary(finished) {
   const t = ride.moving || 1, km = (ride.dist - ride.startDist) / 1000;
   const avgP = ride.powerSum / t;
   const whole = ride.endDist >= route.total;
-  $('sum-title').textContent = !finished ? 'Ride paused' : route.climb && whole ? `${route.meta.sign.top} ! ${route.meta.topEle} m` : 'Finished!';
-  $('sum-sub').textContent = finished
+  $('sum-title').textContent = run ? (!finished ? 'Session paused' : run.test ? 'Test done!' : 'Session done!') : !finished ? 'Ride paused' : route.climb && whole ? `${route.meta.sign.top} ! ${route.meta.topEle} m` : 'Finished!';
+  $('sum-sub').textContent = run
+    ? finished ? lastNote : run.test ? 'The fitness test is not finished yet' : `${fmtTime(run.total - run.elapsed)} of ${run.w.name} left`
+    : finished
     ? route.climb && whole
       ? `You climbed ${route.name}${ride.startDist > 0 ? ' (partial ascent)' : ` from ${route.meta.start}`}. Chapeau!`
       : `You rode ${((ride.dist - ride.startDist) / 1000).toFixed(1)} km on ${route.name}. Nicely done!`
@@ -332,6 +558,18 @@ $('b-end').onclick = () => showSummary(ride.finished);
 $('sum-continue').onclick = () => ($('summary').hidden = true);
 $('sum-again').onclick = () => {
   saveRide();
+  if (run) {
+    lastNote = closeSession();
+    const next = progress.next;
+    if (run.planIndex !== null && progress.state.done[run.planIndex]) {
+      $('i-workout').dataset.ready = 1;
+      $('i-workout').value = next ? `p${next.index}` : '';
+    }
+    run = null;
+    $('wo').hidden = true;
+    $('hud').classList.remove('training');
+    trainingUi();
+  }
   trainer.setGrade(0, CRR);
   ride.active = false;
   ride.finished = false;
@@ -354,7 +592,10 @@ addEventListener('keydown', (e) => {
   if (e.target.matches('input, select')) return;
   if (e.key === 'c' || e.key === 'C') $('b-cam').click();
   if (e.key === 'f' || e.key === 'F') $('b-full').click();
-  if (testPower !== null && !trainer.connected && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+  if (run && ride.active && (e.key === 'e' || e.key === 'E')) $('wo-erg').click();
+  if (run && ride.active && (e.key === '+' || e.key === '=')) scaleRun(0.05);
+  if (run && ride.active && e.key === '-') scaleRun(-0.05);
+  if (testPower !== null && !run && !trainer.connected && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
     testPower = Math.max(0, Math.min(1500, testPower + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 50 : 10)));
     $('test-w').textContent = testPower;
     e.preventDefault();
@@ -364,12 +605,15 @@ addEventListener('resize', () => world?.resize());
 
 // ---------- history ----------
 // Only real rides count: at least two minutes, with the watts coming from a trainer.
-const worthSaving = () => ride.moving >= 120 && ride.samples.length >= 120 && (ride.trainerTime > ride.moving * 0.6 || net.local);
+const realRide = () => ride.trainerTime > ride.moving * 0.6 || net.local;
+const worthSaving = () => ride.moving >= 120 && ride.samples.length >= 120 && realRide();
 async function saveRide() {
   if (ride.saved || !worthSaving()) return;
   ride.saved = true;
   const rec = buildRecord(ride, routeId, settings.weight);
-  rec.finished = ride.finished && ride.endDist >= route.total;
+  rec.finished = !run && ride.finished && ride.endDist >= route.total;
+  rec.start_m = Math.max(0, rec.start_m);
+  if (run) rec.best.wo = run.w.name; // shown in the list of rides
   const note = $('sum-note');
   note.textContent = 'Saving your ride…';
   try {
@@ -456,7 +700,7 @@ async function showHistory() {
     '<tr><th>Ride</th><th>Time</th><th class="opt">km</th><th>Avg W</th><th class="opt">NP</th><th class="opt">Avg bpm</th><th></th></tr>' +
     rides
       .slice(0, 40)
-      .map((r) => `<tr><td>${fmtDate(r.started_at)} · ${esc(routeName(r.route))}${r.finished ? '' : ' (part)'}</td><td>${fmtTime(r.duration_s)}</td><td class="opt">${(r.distance_m / 1000).toFixed(1)}</td><td>${r.avg_power ?? '–'}</td><td class="opt">${r.np ?? '–'}</td><td class="opt">${r.avg_hr ?? '–'}</td><td><button class="x" data-id="${esc(String(r.id))}" title="Delete this ride">✕</button></td></tr>`)
+      .map((r) => `<tr><td>${fmtDate(r.started_at)} · ${esc(routeName(r.route))}${r.best?.wo ? ` · ${esc(String(r.best.wo))}` : r.finished ? '' : ' (part)'}</td><td>${fmtTime(r.duration_s)}</td><td class="opt">${(r.distance_m / 1000).toFixed(1)}</td><td>${r.avg_power ?? '–'}</td><td class="opt">${r.np ?? '–'}</td><td class="opt">${r.avg_hr ?? '–'}</td><td><button class="x" data-id="${esc(String(r.id))}" title="Delete this ride">✕</button></td></tr>`)
       .join('');
 }
 $('s-history').onclick = showHistory;
@@ -488,7 +732,7 @@ const othersRiding = () => [...net.peers.values()].some((p) => here(p) && p.ridi
 function goLabel() {
   if (net.room && othersRiding()) return 'Join the ride';
   if (net.room) return net.peers.size ? 'Start for everyone' : 'Start ride (nobody else here yet)';
-  return canRide() ? 'Start ride' : 'Connect your trainer to start';
+  return canRide() ? (pickedSession() ? 'Start session' : 'Start ride') : 'Connect your trainer to start';
 }
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const mpStatus = (text, err = false) => {
@@ -580,6 +824,7 @@ net.onstart = async (p) => {
 };
 net.onpeers = mpUi;
 net.onauth = () => {
+  applyAccount();
   mpUi();
   const invited = cleanCode(params.get('room'));
   if (net.user && invited && !net.room) joinRoom(invited);
@@ -692,7 +937,7 @@ for (const [id, key] of [['i-gender', 'gender'], ['i-kit', 'kit']]) {
   $(id).value = settings[key];
   $(id).addEventListener('input', () => {
     settings[key] = $(id).value;
-    localStorage.setItem('sommet.settings', JSON.stringify(settings));
+    saveSettings();
     world?.setPlayerLook(myLook());
   });
 }
@@ -703,14 +948,14 @@ qualityLabel();
 $('i-quality').addEventListener('change', () => {
   settings.quality = $('i-quality').value;
   if (settings.quality === 'auto') settings.autoLevel = 'high';
-  localStorage.setItem('sommet.settings', JSON.stringify(settings));
+  saveSettings();
   world?.setQuality(qualityNow());
   qualityLabel();
 });
 $('i-weather').value = settings.weather;
 $('i-weather').addEventListener('change', () => {
   settings.weather = $('i-weather').value;
-  localStorage.setItem('sommet.settings', JSON.stringify(settings));
+  saveSettings();
   loadWeather();
 });
 
@@ -723,11 +968,12 @@ function updateHud(dt) {
   hudAcc = 0;
   const g = route.grade(ride.dist);
   $('h-dist').textContent = ((ride.dist - ride.startDist) / 1000).toFixed(2);
-  $('h-togo').textContent = `${((ride.endDist - ride.dist) / 1000).toFixed(1)} km ${toGo()}`;
+  $('h-togo').textContent = run ? run.w.name : `${((ride.endDist - ride.dist) / 1000).toFixed(1)} km ${toGo()}`;
+  if (run) updateSessionHud();
   $('h-ele').textContent = Math.round(route.ele(ride.dist));
   $('h-climb').textContent = Math.round(ride.climbed);
   $('h-time').textContent = fmtTime(ride.moving);
-  $('h-eta').textContent = ride.finished ? '0:00' : fmtTime(ride.eta);
+  $('h-eta').textContent = ride.finished ? '0:00' : run ? (run.inRamp ? `${run.watts()} W` : fmtTime(run.total - run.elapsed)) : fmtTime(ride.eta);
   const pw = Math.round(ride.shownPower);
   $('h-power').textContent = pw;
   $('h-power').style.color = zoneColor(pw);
@@ -780,7 +1026,7 @@ function watchSmoothness(ms) {
   const level = qualityNow();
   if (settings.quality !== 'auto' || fps >= 38 || level === 'low') return;
   settings.autoLevel = level === 'high' ? 'medium' : 'low';
-  localStorage.setItem('sommet.settings', JSON.stringify(settings));
+  saveSettings();
   world.setQuality(settings.autoLevel);
   qualityLabel();
   perf.warm = 0;
@@ -859,12 +1105,11 @@ async function setRoute(id) {
   route = next;
   routeId = id;
   settings.route = id;
-  localStorage.setItem('sommet.settings', JSON.stringify(settings));
+  saveSettings();
   $('i-route').value = id;
   const avg = ((route.E[route.n - 1] - route.E[0]) / route.total) * 100;
   let steep = 0;
   for (let d = 250; d < route.total; d += 100) steep = Math.max(steep, route.grade(d, 500));
-  $('h-eta-label').textContent = route.climb ? 'to the top' : 'to go';
   $('rc-title').textContent = $('h-route').textContent = route.name;
   $('rc-sub').textContent = route.meta.sub;
   document.title = `Sommet · ${route.name}`;
@@ -895,6 +1140,7 @@ async function setRoute(id) {
   await loadWeather();
   $('s-go').disabled = false;
   deviceUi();
+  trainingUi();
   sendState();
   return true;
 }
@@ -908,6 +1154,8 @@ async function init() {
   $('i-route').innerHTML = Object.keys(TYPES)
     .map((t) => `<optgroup label="${TYPES[t]}">${ROUTES.filter((r) => r.type === t).map((r) => `<option value="${r.id}">${esc(r.name)} · ${r.km} km · ${r.up} m↑</option>`).join('')}</optgroup>`)
     .join('');
+  progress.load();
+  trainingUi();
   $('i-start').addEventListener('change', lengthOptions);
   $('i-route').addEventListener('change', () => chooseRoute($('i-route').value));
   if (params.get('wx')) settings.weather = $('i-weather').value = params.get('wx');
@@ -925,10 +1173,11 @@ async function init() {
   // dev helpers: ?autostart=1&km=16&demo=250&cam=2&route=galibier
   if (params.get('autostart')) {
     for (let i = 0; i < (+params.get('cam') || 0); i++) $('b-cam').click();
+    if (params.get('session')) $('i-workout').value = `p${params.get('session')}`; // &session=0 rides the plan's first session
     startRide(Math.min(route.total - 50, (+params.get('km') || 0) * 1000), (+params.get('len') || 0) * 1000);
     ride.v = 4;
     for (let i = 0; i < (+params.get('ff') || 0); i++) simulate(1);
   }
 }
 init();
-window.sommet = { net, ride, get routeId() { return routeId; }, get world() { return world; }, get route() { return route; } }; // handy in the browser console
+window.sommet = { net, ride, progress, get run() { return run; }, get routeId() { return routeId; }, get world() { return world; }, get route() { return route; } }; // handy in the browser console

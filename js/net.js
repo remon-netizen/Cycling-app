@@ -44,7 +44,7 @@ export class Net {
   }
 
   _setUser(u) {
-    const next = u ? { id: u.id, email: u.email, name: u.user_metadata?.name || u.email.split('@')[0] } : null;
+    const next = u ? { id: u.id, email: u.email, name: u.user_metadata?.name || u.email.split('@')[0], meta: u.user_metadata?.sommet || {} } : null;
     if (this._known && next?.id === this.user?.id && next?.name === this.user?.name) return;
     this._known = true;
     this.user = next;
@@ -64,6 +64,19 @@ export class Net {
   async signIn(email, password) {
     const { error } = await this.sb.auth.signInWithPassword({ email, password });
     if (error) throw error;
+  }
+  // Small things that belong to the rider (training progress, rider settings) are
+  // kept with the account, so they follow them to any device.
+  saveMeta(part) {
+    if (!this.user) return;
+    this.user.meta = { ...this.user.meta, ...part };
+    if (!this.sb) return;
+    clearTimeout(this._metaTimer);
+    const id = this.user.id;
+    this._metaTimer = setTimeout(() => {
+      if (this.user?.id !== id) return;
+      this.sb.auth.updateUser({ data: { sommet: this.user.meta } }).then(({ error }) => error && console.warn('Could not save to the account:', error.message));
+    }, 1500);
   }
   async signOut() {
     await this.sb?.auth.signOut();
