@@ -28,14 +28,24 @@ const TXT = {
 
 const W = (id, name, why, steps) => ({ id, name, why, steps: steps.flat() });
 
-// The fitness test: watts go up a little every minute until you cannot follow.
+// The fitness test needs no knowledge of the rider beyond their weight: it
+// starts very easy and the watts go up a little every minute until they cannot
+// follow. A light rider gets a lower start and smaller steps than a heavy one.
+export function testRamp(weight = 70) {
+  const kg = Math.min(120, Math.max(40, +weight || 70));
+  return { start: Math.round((kg * 0.8) / 5) * 5, step: Math.min(20, Math.max(6, Math.round(kg * 0.15))) };
+}
+export function testSteps(weight) {
+  const { start, step } = testRamp(weight), easy = Math.round(start * 0.85);
+  const steps = [{ kind: 'warm', abs: true, dur: 5 * M, from: easy, to: easy, text: 'Warm up: easy pedalling. The test starts after this' }];
+  for (let i = 0; i < 40; i++) steps.push({ kind: 'work', abs: true, dur: M, from: start + i * step, to: start + i * step, text: 'Every minute a little harder. Keep going until you really cannot' });
+  return steps;
+}
 function testWorkout() {
-  const steps = [{ kind: 'warm', abs: true, dur: 5 * M, from: 50, to: 50, text: 'Warm up: easy pedalling. The test starts after this' }];
-  for (let w = 60; w <= 460; w += 10) steps.push({ kind: 'work', abs: true, dur: M, from: w, to: w, text: 'Every minute a little harder. Keep going until you really cannot' });
   return {
     id: 'test', test: true, name: 'Fitness test',
-    why: 'Starts very easy and gets 10 watts harder every minute. Ride until you cannot keep up; that takes 5 to 20 minutes. It sets the watts of every session to your level.',
-    steps,
+    why: 'You do not need to know anything about your fitness. It starts very easy and gets a little harder every minute. Ride until you cannot keep up; that takes 5 to 20 minutes. The result sets the watts of every session to your level.',
+    steps: testSteps(70),
   };
 }
 
@@ -69,6 +79,25 @@ const WORKOUTS = [
   W('openers', 'Easy with openers', 'Easy riding with three one-minute efforts to be sharp for the final test.', [warm(5), steady(8, 0.6), reps(3, work(1, 1.0, TXT.surge), easy(3)), steady(3, 0.6), cool(5)]),
 ];
 export const workout = (id) => WORKOUTS.find((w) => w.id === id) || null;
+
+// Every session also trains the head: one mental skill to practise, with a
+// short cue that comes back during the efforts.
+const MIND = {
+  next: { name: 'One minute at a time', text: 'Never think about the whole effort. Only the minute you are in.', cue: 'Only this minute. The rest comes later.' },
+  relax: { name: 'Relaxed effort', text: 'Tension costs energy. Check your face, shoulders and hands, and let them go soft while the legs work.', cue: 'Soft face, low shoulders, loose hands.' },
+  breath: { name: 'Breathing rhythm', text: 'Tie your breath to the pedals: a long breath out every third or fourth stroke. It keeps you calm when it gets hard.', cue: 'Long breath out. Find the rhythm.' },
+  talk: { name: 'Your own sentence', text: 'Pick a short sentence before you start, like "strong and calm". Say it to yourself whenever you want to stop.', cue: 'Say your sentence. You are doing this.' },
+  count: { name: 'Counting down', text: 'When an effort bites, count down the last 20 seconds. Anyone can do 20 seconds.', cue: 'Count it down. Nearly there.' },
+  smooth: { name: 'Feel the pedal stroke', text: 'Put all your attention in your feet: smooth circles, no stamping. A busy head goes quiet.', cue: 'Smooth circles. Light feet.' },
+  enjoy: { name: 'Switch off', text: 'Nothing to prove today. Notice how the legs feel and let the thoughts wander.', cue: 'Easy. Enjoy the ride.' },
+  proud: { name: 'Notice what went well', text: 'At the end, name one thing you did well today. That is what makes you come back.', cue: 'Remember this: you kept going.' },
+};
+const MIND_FOR = {
+  test: 'next', spin: 'enjoy', cadence: 'smooth', steps: 'relax', 'tempo-3x3': 'breath', 'steady-20': 'relax', 'tempo-3x4': 'breath', 'cadence-8': 'smooth', 'steady-22': 'enjoy',
+  'light-tempo': 'proud', pickups: 'enjoy', 'ss-3x4': 'next', 'steady-70': 'relax', 'ss-3x5': 'next', strength: 'smooth', surges: 'talk', 'ss-2x8': 'breath', 'thr-4x3': 'talk',
+  'light-tempo-5': 'proud', 'thr-3x5': 'talk', 'thr-2x8': 'next', 'hard-6x1': 'count', 'ss-2x9': 'relax', 'thr-2x9': 'talk', 'hard-8x1': 'count', 'tempo-20': 'breath', openers: 'proud',
+};
+for (const w of WORKOUTS) w.mind = MIND[MIND_FOR[w.id]] || MIND.relax;
 
 // Twelve weeks, three sessions a week. Weeks 4 and 8 are lighter; a test every four weeks.
 export const PLAN = {
@@ -120,12 +149,12 @@ export function sessionSvg(w, { steps = w.steps, height = 46 } = {}) {
 
 // One session being ridden.
 export class Run {
-  constructor(w, ftp, planIndex = null) {
+  constructor(w, ftp, planIndex = null, weight = 70) {
     this.w = w;
     this.test = !!w.test;
     this.ftp = ftp;
     this.planIndex = planIndex;
-    this.steps = w.steps.map((s) => ({ ...s }));
+    this.steps = (w.test ? testSteps(weight) : w.steps).map((s) => ({ ...s }));
     this.i = 0;
     this.t = 0; // seconds into the current step
     this.elapsed = 0;

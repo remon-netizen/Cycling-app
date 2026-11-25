@@ -144,12 +144,13 @@
             <h2>Winter plan</h2>
             <div class="hint" id="tr-status"></div>
           </div>
-          <div class="tr-ftp"><b id="tr-ftp">–</b><span>W FTP</span></div>
+          <div class="tr-ftp"><b id="tr-ftp">–</b><span id="tr-ftp-label">W FTP</span></div>
         </div>
         <div class="tr-dots" id="tr-dots"></div>
         <div class="tr-card" id="tr-card">
           <div class="tr-head"><b id="tr-name"></b><span id="tr-meta"></span></div>
           <div class="tr-why" id="tr-why"></div>
+          <div class="tr-mind" id="tr-mind"></div>
           <div class="tr-chart" id="tr-chart"></div>
           <div class="hint" id="tr-hint"></div>
           <label class="opt inline">Ride it on<select id="i-route"></select></label>
@@ -214,7 +215,7 @@
             <label>Your weight <span><input id="i-weight" type="number" min="35" max="160" step="0.5"> kg</span></label>
             <label>Bike weight <span><input id="i-bike" type="number" min="5" max="25" step="0.5"> kg</span></label>
             <label>FTP <span><input id="i-ftp" type="number" min="40" max="500" step="1"> W</span></label>
-            <div class="hint">FTP is the power you can hold for about an hour. The fitness test in Training measures it for you.</div>
+            <div class="hint" id="ftp-hint"></div>
           </div>
           <div class="block">
             <h3>Ride feel and picture</h3>

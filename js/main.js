@@ -8,7 +8,7 @@ import { loadImagery } from './imagery.js';
 import { History, buildRecord, summarise, improvements, WINDOW_NAMES } from './history.js';
 import { RouteProfile, AheadProfile, MiniMap, gradeColor } from './hud.js';
 import { buildTcx, download } from './tcx.js';
-import { PLAN, SESSIONS, Run, Progress, sessionSvg, minutes } from './training.js';
+import { PLAN, SESSIONS, Run, Progress, sessionSvg, minutes, testRamp, testSteps } from './training.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -20,10 +20,19 @@ const settings = Object.assign(
 );
 // Settings live in this browser; the rider's own numbers also go to their account,
 // so two people can share one laptop.
-const PROFILE = ['weight', 'bike', 'ftp', 'gender', 'kit'];
+const PROFILE = ['weight', 'bike', 'ftp', 'ftpSet', 'gender', 'kit'];
 function saveSettings() {
   localStorage.setItem('sommet.settings', JSON.stringify(settings));
   if (net.user && !net.local) net.saveMeta({ profile: Object.fromEntries(PROFILE.map((k) => [k, settings[k]])) });
+}
+// Until the fitness test has been ridden (or a number typed in), FTP is only an
+// estimate from body weight.
+if (settings.ftpSet === undefined) settings.ftpSet = settings.ftp !== 220;
+const ftpKnown = () => !!settings.ftpSet;
+function guessFtp() {
+  if (ftpKnown()) return;
+  settings.ftp = Math.round(settings.weight * (settings.gender === 'woman' ? 1.6 : 2.1));
+  if (fields.ftp) fields.ftp.value = settings.ftp;
 }
 const fields = { weight: $('i-weight'), bike: $('i-bike'), ftp: $('i-ftp'), difficulty: $('i-diff') };
 for (const [key, el] of Object.entries(fields)) {
@@ -31,11 +40,14 @@ for (const [key, el] of Object.entries(fields)) {
   el.addEventListener('change', () => {
     const v = parseFloat(el.value);
     if (isFinite(v)) settings[key] = Math.min(+el.max, Math.max(+el.min, v));
+    if (key === 'ftp') settings.ftpSet = true;
+    guessFtp();
     el.value = settings[key];
     saveSettings();
-    if (key === 'ftp') trainingUi();
+    trainingUi();
   });
 }
+guessFtp();
 const totalMass = () => settings.weight + settings.bike;
 const kitColor = () => parseInt(String(settings.kit).replace('#', ''), 16) || 0xe8412c;
 // 'auto' starts high and steps down by itself if the ride is not smooth
@@ -166,7 +178,7 @@ document.addEventListener('visibilitychange', () => !document.hidden && ride.act
 // ---------- ride ----------
 function startRide(startDist, length = +$('i-length').value || 0) {
   const pick = pickedSession();
-  run = pick ? new Run(pick.workout, settings.ftp, pick.index) : null;
+  run = pick ? new Run(pick.workout, settings.ftp, pick.index, settings.weight) : null;
   if (run) length = 0; // a session ends on time, not on distance
   lastNote = '';
   // a chosen ride length ends the ride before the end of the route
@@ -426,6 +438,7 @@ function closeSession() {
     if (!real) return `Test mode: with a trainer this would set your FTP to ${r.ftp} W.`;
     const prev = progress.state.tests.at(-1)?.ftp;
     settings.ftp = r.ftp;
+    settings.ftpSet = true;
     fields.ftp.value = r.ftp;
     saveSettings();
     progress.setFtp(r.ftp);
@@ -448,7 +461,11 @@ function trainingUi() {
   const pick = SESSIONS[+sel.value.slice(1)] || SESSIONS[0];
   $('tr-dots').innerHTML = PLAN.weeks.map((w, wi) => `<span title="Week ${wi + 1} · ${w.theme}">${[0, 1, 2].map((k) => `<i class="${st.done[wi * 3 + k] ? 'done' : next && next.index === wi * 3 + k ? 'next' : ''}"></i>`).join('')}</span>`).join('');
   const tests = st.tests, first = tests[0]?.ftp, lastT = tests.at(-1)?.ftp;
-  $('tr-ftp').textContent = settings.ftp;
+  $('tr-ftp').textContent = ftpKnown() ? settings.ftp : '?';
+  $('tr-ftp-label').textContent = ftpKnown() ? 'W FTP' : 'FTP not measured yet';
+  $('ftp-hint').textContent = ftpKnown()
+    ? 'FTP is the power you can hold for about an hour. The fitness test in Training measures it again every four weeks.'
+    : 'Not measured yet: this is an estimate from your weight. The fitness test in Training measures it for you.';
   $('tr-status').textContent = !progress.count
     ? `${PLAN.about}. Each session has one clear goal. Begin with the fitness test.`
     : (next ? `${progress.count} of ${SESSIONS.length} sessions done · week ${next.week} of 12` : `All ${SESSIONS.length} sessions done. Chapeau!`) +
@@ -462,13 +479,14 @@ function trainingUi() {
   $('tr-name').textContent = w.name;
   $('tr-meta').textContent = `${next && next.index === pick.index ? 'next up · ' : ''}week ${pick.week}, session ${pick.n} · ${w.test ? '15 to 30' : minutes(w)} min`;
   $('tr-why').textContent = w.why;
-  $('tr-chart').innerHTML = sessionSvg(w).svg;
+  $('tr-chart').innerHTML = sessionSvg(w, w.test ? { steps: testSteps(settings.weight) } : {}).svg;
+  $('tr-mind').innerHTML = `<b>Mental focus · ${esc(w.mind.name)}</b> ${esc(w.mind.text)}`;
   const hints = [];
-  if (w.test) hints.push('Ride it rested. When it gets hard, hang on as long as you can: the last minute counts most.');
-  else {
-    hints.push(`With your FTP of ${settings.ftp} W the hardest part is at ${Math.round(top * settings.ftp)} W.`);
-    if (!tests.length) hints.push('You have not done the fitness test yet, so these watts are a guess.');
-  }
+  if (w.test) {
+    const r = testRamp(settings.weight);
+    hints.push(`For your weight it starts at ${r.start} W and adds ${r.step} W every minute. Ride it rested, and hang on as long as you can: the last minute counts most.`);
+  } else if (ftpKnown()) hints.push(`With your FTP of ${settings.ftp} W the hardest part is at ${Math.round(top * settings.ftp)} W.`);
+  else hints.push(`Your FTP is not measured yet, so this session would use an estimate from your weight (hardest part ${Math.round(top * settings.ftp)} W). Do the fitness test first.`);
   hints.push(!trainer.connected || trainer.canControl ? 'The trainer holds the watts for you: choose a light gear and just keep pedalling.' : 'This trainer cannot set resistance: shift gears to reach the target.');
   if (route?.climb) hints.push('A flat route is nicer for a session than a mountain.');
   $('tr-hint').textContent = hints.join(' ');
@@ -486,6 +504,7 @@ function applyAccount() {
   const pr = net.user?.meta?.profile;
   if (pr) {
     for (const k of PROFILE) if (pr[k] !== undefined && pr[k] !== null) settings[k] = pr[k];
+    guessFtp();
     for (const [key, el] of Object.entries(fields)) el.value = settings[key];
     $('i-gender').value = settings.gender;
     $('i-kit').value = settings.kit;
@@ -502,7 +521,9 @@ function updateSessionHud() {
   $('wo-count').textContent = run.test ? (run.result ? 'Result: ' + (run.result.ftp ? `FTP ${run.result.ftp} W` : 'too short') : run.inRamp ? 'Hang on as long as you can' : 'Warm-up') : run.count() || KIND[s.kind];
   $('wo-target').textContent = target;
   $('wo-left').textContent = fmtTime(Math.ceil(run.left));
-  $('wo-text').textContent = s.text + (s.cad ? ` · ${s.cad[0]} to ${s.cad[1]} rpm` : '');
+  // during the efforts the mental cue of the session takes turns with the instruction
+  const mind = (s.kind === 'work' || s.kind === 'steady') && Math.floor(run.t / 20) % 3 === 2;
+  $('wo-text').textContent = mind ? run.w.mind.cue : s.text + (s.cad ? ` · ${s.cad[0]} to ${s.cad[1]} rpm` : '');
   const diff = (ride.shownPower - target) / target, ok = Math.abs(ride.shownPower - target) <= Math.max(8, target * 0.08);
   $('wo-mark').style.left = `${Math.max(0, Math.min(100, 50 + diff * 100))}%`;
   let cue = ride.power < 1 ? 'Pedal to start the clock' : ok ? 'On target' : diff < -0.2 ? 'Push harder' : diff < 0 ? 'A little more' : diff > 0.2 ? 'Too hard: ease off' : 'Ease off a little';
@@ -968,7 +989,9 @@ for (const [id, key] of [['i-gender', 'gender'], ['i-kit', 'kit']]) {
   $(id).value = settings[key];
   $(id).addEventListener('input', () => {
     settings[key] = $(id).value;
+    guessFtp();
     saveSettings();
+    trainingUi();
     world?.setPlayerLook(myLook());
   });
 }
