@@ -8,7 +8,7 @@ import { loadImagery } from './imagery.js';
 import { History, buildRecord, summarise, improvements, WINDOW_NAMES } from './history.js';
 import { RouteProfile, AheadProfile, MiniMap, gradeColor } from './hud.js';
 import { buildTcx, download } from './tcx.js';
-import { PLAN, SESSIONS, Run, Progress, sessionSvg, minutes, testRamp, testSteps } from './training.js';
+import { PLAN, SESSIONS, Run, Progress, sessionSvg, minutes, testRamp, testSteps, FEEL } from './training.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -179,6 +179,7 @@ document.addEventListener('visibilitychange', () => !document.hidden && ride.act
 function startRide(startDist, length = +$('i-length').value || 0) {
   const pick = pickedSession();
   run = pick ? new Run(pick.workout, settings.ftp, pick.index, settings.weight) : null;
+  if (run && !run.test) run.scale = progress.state.scale || 1; // what earlier sessions felt like
   if (run) length = 0; // a session ends on time, not on distance
   lastNote = '';
   // a chosen ride length ends the ride before the end of the route
@@ -450,6 +451,7 @@ function closeSession() {
   if (part < 0.8) return `You rode ${Math.round(part * 100)}% of this session. It counts for the plan from 80%.`;
   if (!real) return 'Test mode: this session is not counted for the plan.';
   if (run.planIndex !== null) progress.complete(run.planIndex, run.score);
+  run.counted = run.planIndex !== null;
   const sc = run.score;
   return `Session done${sc === null ? '' : `: on target ${Math.round(sc * 100)}% of the time`}. ${progress.next ? `Next up: ${progress.next.workout.name}.` : 'That was the last one: plan finished!'}`;
 }
@@ -485,8 +487,9 @@ function trainingUi() {
   if (w.test) {
     const r = testRamp(settings.weight);
     hints.push(`For your weight it starts at ${r.start} W and adds ${r.step} W every minute. Ride it rested, and hang on as long as you can: the last minute counts most.`);
-  } else if (ftpKnown()) hints.push(`With your FTP of ${settings.ftp} W the hardest part is at ${Math.round(top * settings.ftp)} W.`);
+  } else if (ftpKnown()) hints.push(`With your FTP of ${settings.ftp} W the hardest part is at ${Math.round(top * settings.ftp * (st.scale || 1))} W.`);
   else hints.push(`Your FTP is not measured yet, so this session would use an estimate from your weight (hardest part ${Math.round(top * settings.ftp)} W). Do the fitness test first.`);
+  if (!w.test && (st.scale || 1) !== 1) hints.push(`Set to ${Math.round(st.scale * 100)}% after how your last sessions felt.`);
   hints.push(!trainer.connected || trainer.canControl ? 'The trainer holds the watts for you: choose a light gear and just keep pedalling.' : 'This trainer cannot set resistance: shift gears to reach the target.');
   if (route?.climb) hints.push('A flat route is nicer for a session than a mountain.');
   $('tr-hint').textContent = hints.join(' ');
@@ -594,12 +597,23 @@ function showSummary(finished) {
     cells.push([`${w > 0.5 ? '+' : ''}${Math.round(w)}`, w >= 0 ? 'avg W lost to wind' : 'avg W from tailwind']);
   }
   $('sum-grid').innerHTML = cells.map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join('');
+  $('sum-feel').hidden = !(finished && run && run.counted && !run.felt);
   $('sum-continue').hidden = finished;
   if (!ride.saved) $('sum-note').textContent = finished ? '' : worthSaving() ? 'This ride is saved when you go back to the start.' : '';
   $('sum-tcx').disabled = ride.samples.length < 2;
   $('summary').hidden = false;
 }
 
+$('sum-feel-btns').innerHTML = Object.entries(FEEL).map(([k, v]) => `<button type="button" class="mini" data-f="${k}">${v.label}</button>`).join('');
+$('sum-feel-btns').addEventListener('click', (e) => {
+  const f = e.target.dataset.f;
+  if (!f || !run || run.felt) return;
+  run.felt = f;
+  const before = progress.state.scale || 1, now = progress.feel(run.planIndex, f);
+  $('sum-feel').hidden = true;
+  $('sum-sub').textContent +=
+    ' ' + (now > before ? `Noted: the next sessions get a little harder (${Math.round(now * 100)}%).` : now < before ? `Noted: the next sessions get a little lighter (${Math.round(now * 100)}%).` : f === 'hard' ? 'Noted. Hard but done is exactly right.' : 'Noted.');
+});
 $('b-end').onclick = () => showSummary(ride.finished);
 $('sum-continue').onclick = () => ($('summary').hidden = true);
 $('sum-again').onclick = () => {

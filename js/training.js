@@ -268,7 +268,9 @@ export class Run {
 
 // Where the rider is in the plan. Kept in the browser and, when signed in, in
 // the account (Supabase user metadata), so it follows the rider to any device.
-const blank = () => ({ ftp: null, done: {}, tests: [], updated: 0 });
+const blank = () => ({ ftp: null, done: {}, tests: [], scale: 1, updated: 0 });
+// what the rider's answer to "how did it feel?" does to the watts of the next sessions
+export const FEEL = { easy: { label: 'Easy', d: 0.03 }, right: { label: 'Just right', d: 0 }, hard: { label: 'Hard, but I made it', d: 0 }, toohard: { label: 'Too hard', d: -0.05 } };
 export class Progress {
   constructor(net) {
     this.net = net;
@@ -300,13 +302,22 @@ export class Progress {
     this.state.done[index] = { at: new Date().toISOString().slice(0, 10), ...(score === null || score === undefined ? {} : { s: Math.round(score * 100) }) };
     this.save();
   }
+  // Returns the new scale (1 = the watts exactly as the test says).
+  feel(index, f) {
+    if (!FEEL[f]) return this.state.scale;
+    if (this.state.done[index]) this.state.done[index].f = f;
+    this.state.scale = Math.min(1.15, Math.max(0.8, Math.round(((this.state.scale || 1) + FEEL[f].d) * 100) / 100));
+    this.save();
+    return this.state.scale;
+  }
   setFtp(ftp) {
+    this.state.scale = 1; // a new measurement: start level again
     this.state.ftp = ftp;
     this.state.tests = [...this.state.tests, { at: new Date().toISOString().slice(0, 10), ftp }].slice(-24);
     this.save();
   }
   reset() {
-    this.state = Object.assign(blank(), { ftp: this.state.ftp, tests: this.state.tests });
+    this.state = Object.assign(blank(), { ftp: this.state.ftp, tests: this.state.tests, scale: this.state.scale || 1 });
     this.save();
   }
 }

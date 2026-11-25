@@ -277,3 +277,7 @@ h3.gap { margin-top: 24px; }
 }
 .tr-mind { font-size: 13px; line-height: 1.45; margin-top: 8px; padding: 8px 11px; border-radius: 9px; background: rgba(111, 183, 255, 0.12); border: 1px solid rgba(111, 183, 255, 0.3); }
 .tr-mind b { display: block; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #9cceff; margin-bottom: 2px; }
+.sum-feel { margin-top: 16px; padding: 12px 14px; border-radius: 12px; background: rgba(111, 183, 255, 0.12); border: 1px solid rgba(111, 183, 255, 0.3); }
+.sum-feel b { font-size: 14px; }
+.sum-feel div { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.sum-feel .mini { padding: 7px 13px; font-size: 13px; }
