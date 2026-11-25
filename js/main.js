@@ -187,7 +187,7 @@ function startRide(startDist, length = +$('i-length').value || 0) {
   Object.assign(ride, {
     active: true, finished: false, startDist, startDate: new Date(), dist: startDist, v: 0,
     moving: 0, wall: 0, climbed: 0, energy: 0, powerSum: 0, hrSum: 0, hrTime: 0, cadSum: 0, cadTime: 0,
-    samples: [], recent: [], sentGrade: null, sentPower: null, secAcc: 0, etaAcc: 5, windWork: 0, draftWork: 0, braking: false, wasForest: null, trainerTime: 0, saved: false,
+    ended: false, samples: [], recent: [], sentGrade: null, sentPower: null, secAcc: 0, etaAcc: 5, windWork: 0, draftWork: 0, braking: false, wasForest: null, trainerTime: 0, saved: false,
   });
   ride.nextLandmark = route.landmarks.findIndex((l) => l.dist > startDist + 50);
   const wkg = [2.1, 2.6, 2.9, 3.2, 3.5, 4.0], offs = [18, 45, 90, 160, 260, 420];
@@ -204,6 +204,8 @@ function startRide(startDist, length = +$('i-length').value || 0) {
   $('h-eta-label').textContent = run ? (run.test ? 'test' : 'session left') : route.climb ? 'to the top' : 'to go';
   if (run) {
     drawRunChart();
+    Object.assign(coach, { text: '', until: 0, streak: 0, low: 0, praised: -1, nudged: -1 });
+    say(run.test ? 'Warm up easily. The test itself starts in five minutes.' : `Today: ${run.w.mind.name.toLowerCase()}. ${run.w.mind.cue}`, 14);
     toast(run.test ? 'Fitness test: warm up first, then it gets a little harder every minute' : `${run.w.name} · ${minutes(run.w)} minutes. Have a good session!`, 7000);
   } else toast(`${route.name} · ${((ride.endDist - startDist) / 1000).toFixed(1)} km ${toGo()}. ${route.climb ? 'Bon courage!' : 'Have a good ride!'}`);
 }
@@ -295,7 +297,6 @@ function simulate(dt) {
     trainer.setGrade(0, CRR);
     if (run) lastNote = closeSession();
     showSummary(true);
-    saveRide();
   }
 }
 
@@ -309,6 +310,7 @@ function everySecond() {
   if (ride.recent.length > 60) ride.recent.shift();
 
   control(p.y);
+  coachSecond();
   if (run && !run.done && !run.inRamp && run.left <= 3.5 && run.left > 0.5 && run.next()) beep(620, 0.09);
 
   ride.etaAcc += 1;
@@ -407,6 +409,57 @@ function beep(freq, len) {
     o.stop(t + len + 0.02);
   } catch {}
 }
+// The coach: short lines at the moments that matter, shown in the session panel
+// and, if switched on, read out loud.
+const any = (list) => list[Math.floor(Math.random() * list.length)];
+const coach = { text: '', until: 0, streak: 0, low: 0, praised: -1, nudged: -1 };
+function say(text, secs = 9) {
+  coach.text = text;
+  coach.until = ride.wall + secs;
+  if (settings.voice && window.speechSynthesis) {
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'en-GB';
+      u.rate = 1.02;
+      speechSynthesis.speak(u);
+    } catch {}
+  }
+}
+function coachStep() {
+  const s = run.step, works = run.steps.filter((x) => x.kind === 'work'), k = run.steps.slice(0, run.i + 1).filter((x) => x.kind === 'work').length;
+  const prev = run.steps[run.i - 1];
+  if (run.test) return run.inRamp && prev?.kind === 'warm' ? say('The test begins. Easy at first: save yourself for later.') : run.inRamp && run.i % 3 === 0 ? say(any(['Still there. Strong.', 'Every extra minute counts.', 'Stay with it. Only this minute.', 'You are doing great. Keep the legs turning.'])) : null;
+  if (s.kind === 'work') say(works.length > 1 && k === works.length ? any(['Last one. Give it what you have left.', 'Final effort. After this you are done.']) : k === 1 ? any(['First effort. Start calm, do not rush it.', 'Here we go. Settle into it.']) : any(['Next one. Same as before, you know how it goes.', 'Again. Find your rhythm.', 'You have done this already. Do it once more.']));
+  else if (s.kind === 'cool') say(any(['The work is done. You did it!', 'That was it. Be proud of this one.']), 12);
+  else if (prev?.kind === 'work') say(any(['Well done. Breathe out, loose legs.', 'That one is in the bank. Recover now.', 'Great effort. Drink something.']));
+  else if (s.kind === 'steady' && prev?.kind === 'warm') say('Nice and steady now. Find a pace you could hold all day.');
+}
+// once a second during a session
+function coachSecond() {
+  if (!run || run.done || ride.power < 1) return;
+  const s = run.step, left = Math.round(run.left), target = run.watts();
+  const ok = Math.abs(ride.shownPower - target) <= Math.max(8, target * 0.08);
+  coach.streak = ok ? coach.streak + 1 : 0;
+  coach.low = ride.shownPower < target * 0.88 ? coach.low + 1 : 0;
+  if (run.test) return;
+  const total = Math.round(run.total), el = Math.round(run.elapsed);
+  if (el === Math.round(total / 2)) return say('Halfway through the session. You are doing great.');
+  if (s.kind === 'work' || s.kind === 'steady') {
+    const long = s.dur >= 180;
+    if (long && left === Math.round(s.dur / 2)) return say(any(['Halfway through this one. Same again.', 'Half done. Stay relaxed.']));
+    if (long && left === 60) return say(any(['One more minute. You can do a minute.', 'Sixty seconds. Hold it there.']));
+    if (s.kind === 'work' && left === 20) return say(any(['Twenty seconds. Count them down.', 'Nearly there. Finish it.']), 6);
+    if (coach.streak === 40 && coach.praised !== run.i) {
+      coach.praised = run.i;
+      return say(any(['Right on target. Beautiful pacing.', 'Spot on. Keep exactly this.', 'This is what strong looks like.']));
+    }
+    if (coach.low === 15 && coach.nudged !== run.i) {
+      coach.nudged = run.i;
+      return say(any(['Slipping a little. Bring it back gently.', 'A touch more. You have it in you.']));
+    }
+  }
+}
 function drawRunChart() {
   const c = sessionSvg(run.w, { steps: run.steps, height: 40 });
   run.chartTotal = c.total;
@@ -421,6 +474,7 @@ function sessionEvent(ev) {
     toast(run.result.ftp ? `Test done: your FTP is ${run.result.ftp} W. Now spin the legs out.` : 'Test stopped. Spin the legs out.', 9000);
   } else {
     beep(run.inRamp ? 700 : 880, run.inRamp ? 0.12 : 0.3);
+    coachStep();
     const s = run.step;
     if (!run.inRamp) toast(`${run.count() || KIND[s.kind]} · ${fmtTime(s.dur)} at ${run.wattsOf(s)} W`, 5000);
   }
@@ -431,6 +485,7 @@ function sessionEvent(ev) {
 function closeSession() {
   if (!run || run.closed) return lastNote;
   run.closed = true;
+  run.undo = { state: JSON.stringify(progress.state), ftp: settings.ftp, ftpSet: settings.ftpSet }; // for "delete ride"
   const real = realRide();
   if (run.test) {
     if (!run.result && run.inRamp) run.endTest();
@@ -524,9 +579,13 @@ function updateSessionHud() {
   $('wo-count').textContent = run.test ? (run.result ? 'Result: ' + (run.result.ftp ? `FTP ${run.result.ftp} W` : 'too short') : run.inRamp ? 'Hang on as long as you can' : 'Warm-up') : run.count() || KIND[s.kind];
   $('wo-target').textContent = target;
   $('wo-left').textContent = fmtTime(Math.ceil(run.left));
-  // during the efforts the mental cue of the session takes turns with the instruction
-  const mind = (s.kind === 'work' || s.kind === 'steady') && Math.floor(run.t / 20) % 3 === 2;
-  $('wo-text').textContent = mind ? run.w.mind.cue : s.text + (s.cad ? ` · ${s.cad[0]} to ${s.cad[1]} rpm` : '');
+  $('wo-text').textContent = s.text + (s.cad ? ` · ${s.cad[0]} to ${s.cad[1]} rpm` : '');
+  // the coach speaks at key moments; in between, the mental focus of the session stays in view
+  const talking = ride.wall < coach.until;
+  $('wo-coach').textContent = talking ? coach.text : s.kind === 'work' || s.kind === 'steady' || run.inRamp ? run.w.mind.cue : '';
+  $('wo-coach').className = talking ? 'wo-coach say' : 'wo-coach';
+  $('wo-voice').textContent = `Voice: ${settings.voice ? 'on' : 'off'}`;
+  $('wo-voice').hidden = !window.speechSynthesis;
   const diff = (ride.shownPower - target) / target, ok = Math.abs(ride.shownPower - target) <= Math.max(8, target * 0.08);
   $('wo-mark').style.left = `${Math.max(0, Math.min(100, 50 + diff * 100))}%`;
   let cue = ride.power < 1 ? 'Pedal to start the clock' : ok ? 'On target' : diff < -0.2 ? 'Push harder' : diff < 0 ? 'A little more' : diff > 0.2 ? 'Too hard: ease off' : 'Ease off a little';
@@ -556,6 +615,12 @@ $('wo-erg').onclick = () => {
   control();
   toast(settings.erg ? 'The trainer holds the target watts' : 'You set the watts yourself: the road decides the resistance', 4000);
 };
+$('wo-voice').onclick = () => {
+  settings.voice = !settings.voice;
+  saveSettings();
+  if (settings.voice) say('Voice is on. I will talk you through it.', 5);
+  else window.speechSynthesis?.cancel();
+};
 $('wo-stop').onclick = () => {
   if (!run?.inRamp) return;
   run.endTest();
@@ -572,14 +637,15 @@ function showSummary(finished) {
   const t = ride.moving || 1, km = (ride.dist - ride.startDist) / 1000;
   const avgP = ride.powerSum / t;
   const whole = ride.endDist >= route.total;
-  $('sum-title').textContent = run ? (!finished ? 'Session paused' : run.test ? 'Test done!' : 'Session done!') : !finished ? 'Ride paused' : route.climb && whole ? `${route.meta.sign.top} ! ${route.meta.topEle} m` : 'Finished!';
+  const stopped = !finished && ride.ended; // stopped early and saved
+  $('sum-title').textContent = stopped ? (run ? 'Session stopped' : 'Ride stopped') : run ? (!finished ? 'Session paused' : run.test ? 'Test done!' : 'Session done!') : !finished ? 'Ride paused' : route.climb && whole ? `${route.meta.sign.top} ! ${route.meta.topEle} m` : 'Finished!';
   $('sum-sub').textContent = run
-    ? finished ? lastNote : run.test ? 'The fitness test is not finished yet' : `${fmtTime(run.total - run.elapsed)} of ${run.w.name} left`
+    ? finished || stopped ? lastNote + (run.feltNote || '') : run.test ? 'The fitness test is not finished yet' : `${fmtTime(run.total - run.elapsed)} of ${run.w.name} left`
     : finished
     ? route.climb && whole
       ? `You climbed ${route.name}${ride.startDist > 0 ? ' (partial ascent)' : ` from ${route.meta.start}`}. Chapeau!`
       : `You rode ${((ride.dist - ride.startDist) / 1000).toFixed(1)} km on ${route.name}. Nicely done!`
-    : `${((ride.endDist - ride.dist) / 1000).toFixed(1)} km left`;
+    : stopped ? `You rode ${km.toFixed(1)} km on ${route.name}.` : `${((ride.endDist - ride.dist) / 1000).toFixed(1)} km left`;
   const cells = [
     [fmtTime(ride.moving), 'time'],
     [km.toFixed(2), 'km'],
@@ -597,10 +663,19 @@ function showSummary(finished) {
     cells.push([`${w > 0.5 ? '+' : ''}${Math.round(w)}`, w >= 0 ? 'avg W lost to wind' : 'avg W from tailwind']);
   }
   $('sum-grid').innerHTML = cells.map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join('');
-  $('sum-feel').hidden = !(finished && run && run.counted && !run.felt);
-  $('sum-continue').hidden = finished;
-  if (!ride.saved) $('sum-note').textContent = finished ? '' : worthSaving() ? 'This ride is saved when you go back to the start.' : '';
-  $('sum-tcx').disabled = ride.samples.length < 2;
+  const ended = finished || ride.ended, worth = worthSaving(), saved = ride.saved;
+  $('sum-feel').hidden = !(ended && run && run.counted && !run.felt);
+  $('sum-continue').hidden = ended;
+  $('sum-save').hidden = saved || !worth;
+  $('sum-save').textContent = ended ? 'Save ride' : 'Save and stop';
+  $('sum-save').className = ended ? 'btn primary' : 'btn ghost';
+  $('sum-save').disabled = false;
+  $('sum-discard').hidden = saved || !worth;
+  $('sum-again').hidden = !saved && worth;
+  $('sum-again').textContent = saved ? 'Done' : ended ? 'Back to start' : 'Stop riding';
+  $('sum-again').className = ended ? 'btn primary' : 'btn ghost';
+  if (!saved) $('sum-note').textContent = worth ? '' : ride.moving < 120 ? 'Rides shorter than two minutes are not saved.' : 'Rides without a trainer are not saved.';
+  $('sum-tcx').hidden = ride.samples.length < 2;
   $('summary').hidden = false;
 }
 
@@ -611,13 +686,13 @@ $('sum-feel-btns').addEventListener('click', (e) => {
   run.felt = f;
   const before = progress.state.scale || 1, now = progress.feel(run.planIndex, f);
   $('sum-feel').hidden = true;
-  $('sum-sub').textContent +=
+  $('sum-sub').textContent += run.feltNote =
     ' ' + (now > before ? `Noted: the next sessions get a little harder (${Math.round(now * 100)}%).` : now < before ? `Noted: the next sessions get a little lighter (${Math.round(now * 100)}%).` : f === 'hard' ? 'Noted. Hard but done is exactly right.' : 'Noted.');
 });
 $('b-end').onclick = () => showSummary(ride.finished);
 $('sum-continue').onclick = () => ($('summary').hidden = true);
-$('sum-again').onclick = () => {
-  saveRide();
+// Leave the ride and go back to the start screen.
+function leaveRide() {
   if (run) {
     lastNote = closeSession();
     const next = progress.next;
@@ -628,6 +703,7 @@ $('sum-again').onclick = () => {
     run = null;
     $('wo').hidden = true;
     $('hud').classList.remove('training');
+    window.speechSynthesis?.cancel();
     trainingUi();
   }
   trainer.setGrade(0, CRR);
@@ -640,6 +716,29 @@ $('sum-again').onclick = () => {
   ride.v = 0;
   world.snapCamera();
   deviceUi();
+}
+$('sum-again').onclick = leaveRide;
+$('sum-save').onclick = async () => {
+  $('sum-save').disabled = true;
+  ride.ended = true; // no way back onto the road after saving
+  if (run) lastNote = closeSession();
+  await saveRide();
+  showSummary(ride.finished);
+};
+$('sum-discard').onclick = () => {
+  if (!confirm('Delete this ride? It will not be saved, and a session will not count for the plan.')) return;
+  ride.saved = true; // nothing to save any more
+  if (run?.undo) {
+    // take back what finishing the session changed
+    progress.state = JSON.parse(run.undo.state);
+    progress.save();
+    settings.ftp = run.undo.ftp;
+    settings.ftpSet = run.undo.ftpSet;
+    fields.ftp.value = settings.ftp;
+    saveSettings();
+    lastNote = '';
+  } else if (run) run.closed = true; // stopped early: do not count it either
+  leaveRide();
 };
 $('sum-tcx').onclick = () => {
   const stamp = ride.startDate.toISOString().slice(0, 16).replace(/[:T]/g, '-');

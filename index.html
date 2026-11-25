@@ -67,6 +67,7 @@
         <div id="wo-text"></div>
         <div class="wo-gauge"><i id="wo-mark"></i></div>
         <div class="wo-cue" id="wo-cue"></div>
+        <div class="wo-coach" id="wo-coach"></div>
       </div>
       <div class="wo-num right"><span class="v" id="wo-left">0:00</span><span class="u">left</span></div>
     </div>
@@ -75,6 +76,7 @@
       <span id="wo-next"></span>
       <span class="spacer"></span>
       <span id="wo-adjust"><button class="mini" id="wo-less" title="Make it easier (−)">−</button><span id="wo-scale">100%</span><button class="mini" id="wo-more" title="Make it harder (+)">+</button></span>
+      <button class="mini" id="wo-voice" title="Have the coach lines read out loud"></button>
       <button class="mini" id="wo-erg" title="Let the trainer hold the target watts for you (E)"></button>
       <button class="mini strong" id="wo-stop" hidden>I can't keep up</button>
     </div>
@@ -276,9 +278,13 @@
     <div class="sum-grid" id="sum-grid"></div>
     <div class="sum-feel" id="sum-feel" hidden><b>How did it feel?</b><div id="sum-feel-btns"></div></div>
     <div class="sum-note" id="sum-note"></div>
-    <button id="sum-tcx" class="btn primary">Download ride (.tcx)</button>
-    <button id="sum-continue" class="btn ghost">Keep riding</button>
-    <button id="sum-again" class="btn ghost">Back to start</button>
+    <div class="sum-actions">
+      <button id="sum-continue" class="btn primary">Keep riding</button>
+      <button id="sum-save" class="btn primary">Save ride</button>
+      <button id="sum-again" class="btn primary">Done</button>
+      <button id="sum-discard" class="btn ghost">Delete ride</button>
+    </div>
+    <div class="foot"><button class="link quiet" id="sum-tcx" type="button">Download as a .tcx file (for Strava or Garmin)</button></div>
   </div>
 </div>
 
