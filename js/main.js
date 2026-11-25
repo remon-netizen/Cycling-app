@@ -1232,6 +1232,9 @@ setInterval(() => {
 // ---------- routes ----------
 // km and metres of climbing are only for the picker; the real numbers come from the route file
 const ROUTES = [
+  { id: 'duinen-noord', name: 'Dunes to Noordwijk', type: 'Dunes', km: 20, up: 79 },
+  { id: 'duinen-zuid', name: 'Dunes to Hoek van Holland', type: 'Dunes', km: 19, up: 58 },
+  { id: 'meijendel', name: 'Meijendel loop', type: 'Dunes', km: 24, up: 88 },
   { id: 'amstel', name: 'Along the Amstel', type: 'Flat', km: 24, up: 36 },
   { id: 'afsluitdijk', name: 'Afsluitdijk', type: 'Flat', km: 34, up: 0 },
   { id: 'posbank', name: 'Posbank', type: 'Rolling', km: 15, up: 145 },
@@ -1242,7 +1245,7 @@ const ROUTES = [
   { id: 'ventoux', name: 'Mont Ventoux', type: 'Mountain', km: 21, up: 1597 },
   { id: 'stelvio', name: 'Passo dello Stelvio', type: 'Mountain', km: 24, up: 1853 },
 ];
-const TYPES = { Flat: 'Flat · easy spinning', Rolling: 'Rolling · moderate hills', Hilly: 'Hilly · short steep climbs', Mountain: 'Mountain · one long climb' };
+const TYPES = { Dunes: 'Around The Hague · dunes and sea', Flat: 'Flat · easy spinning', Rolling: 'Rolling · moderate hills', Hilly: 'Hilly · short steep climbs', Mountain: 'Mountain · one long climb' };
 function lengthOptions() {
   const left = route.total - route.landmarks[+$('i-start').value || 0].dist;
   $('i-length').innerHTML =

@@ -57,6 +57,21 @@ ROUTES.update({
         landmarks=[{'name': 'Sibbe', 'lat': 50.8440, 'lon': 5.8260}, {'name': 'Gulpen', 'lat': 50.8150, 'lon': 5.8890}, {'name': 'Eys', 'lat': 50.8260, 'lon': 5.9330},
                    {'name': 'Eyserbosweg', 'lat': 50.8400, 'lon': 5.9230}, {'name': 'Wijlre', 'lat': 50.8330, 'lon': 5.8960}, {'name': 'Foot of the Cauberg', 'lat': 50.8650, 'lon': 5.8330, 'last': True}]),
 })
+# Around The Hague, over the cycle paths through the dunes (profile='bike' routes
+# over cycle paths instead of roads). water='coast': the sea is drawn, trees stay.
+DUNES = dict(kind='rolling', forest=None, bare=None, high='alpine', lowland='alpine', maxSlope=0.09, smooth=6, dx=200, margin=1800, sign=NL,
+    trees='mixed', forestScale=0.6, houses='brick', water='coast', extras=['sea'], profile='bike', path=True, dunes=True)
+ROUTES.update({
+    'duinen-noord': dict(DUNES, name='Dunes to Noordwijk', sub='Scheveningen to Noordwijk · Meijendel and the Katwijk dunes', start='Scheveningen', top='Noordwijk',
+        coords='4.2975,52.1175;4.3610,52.1700;4.3975,52.2010;4.4300,52.2400',
+        landmarks=[{'name': 'Meijendel', 'lat': 52.138, 'lon': 4.334}, {'name': 'Wassenaarse Slag', 'lat': 52.1700, 'lon': 4.3610}, {'name': 'Katwijk', 'lat': 52.2010, 'lon': 4.3975}]),
+    'duinen-zuid': dict(DUNES, name='Dunes to Hoek van Holland', sub='Scheveningen harbour to Hoek van Holland · Westduinpark and the Westland coast', start='Scheveningen', top='Hoek van Holland',
+        coords='4.2640,52.0975;4.2220,52.0700;4.1690,52.0310;4.1200,51.9790',
+        landmarks=[{'name': 'Kijkduin', 'lat': 52.0700, 'lon': 4.2220}, {'name': 'Ter Heijde', 'lat': 52.0310, 'lon': 4.1690}, {'name': "'s-Gravenzande", 'lat': 52.001, 'lon': 4.135}]),
+    'meijendel': dict(DUNES, name='Meijendel loop', sub='Scheveningen loop · dunes out, Wassenaar and Meijendel back', start='Scheveningen', top='Scheveningen',
+        coords='4.2975,52.1175;4.3610,52.1700;4.3950,52.1450;4.3290,52.1335;4.2975,52.1175',
+        landmarks=[{'name': 'Wassenaarse Slag', 'lat': 52.1700, 'lon': 4.3610}, {'name': 'Wassenaar', 'lat': 52.1450, 'lon': 4.3950}, {'name': 'Meijendel', 'lat': 52.1335, 'lon': 4.3290}]),
+})
 for _r in ROUTES.values(): _r.setdefault('kind', 'climb')
 
 def get(url):
@@ -93,11 +108,13 @@ def gauss(vals, sigma):
 def build(rid):
     meta = dict(ROUTES[rid]); coords_arg = meta.pop('coords'); fill = meta.pop('fillEle', None)
     M = float(meta.pop('margin', 3000)); DX = float(meta.pop('dx', 150))
+    if '--meta' in sys.argv: meta.pop('profile', None)
     out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', rid + '.json')
     if '--meta' in sys.argv:  # only refresh the descriptive part
         d = json.load(open(out)); d['meta'] = dict(meta, id=rid)
         json.dump(d, open(out, 'w'), separators=(',', ':'), ensure_ascii=False); return
-    r = get('https://router.project-osrm.org/route/v1/driving/%s?overview=full&geometries=geojson&continue_straight=true' % coords_arg)
+    host = 'https://routing.openstreetmap.de/routed-bike' if meta.pop('profile', None) == 'bike' else 'https://router.project-osrm.org'
+    r = get(host + '/route/v1/driving/%s?overview=full&geometries=geojson&continue_straight=true' % coords_arg)
     coords = r['routes'][0]['geometry']['coordinates']
     lons = [c[0] for c in coords]; lats = [c[1] for c in coords]
     lon0 = (min(lons) + max(lons)) / 2; lat0 = (min(lats) + max(lats)) / 2

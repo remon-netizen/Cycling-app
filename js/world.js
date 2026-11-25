@@ -252,6 +252,7 @@ export class World {
     this.F = meta.forest || [1e8, 1e8 + 1, 1e8 + 2, 1e8 + 3]; // forest: starts, full, thins, gone
     this.B = meta.bare || [1e8, 1e8 + 1]; // open rock: from, to
     this.water = !!meta.water; // sea-level ground is drawn as water
+    this.dunes = !!meta.dunes; // sand hummocks beside the path
     this.alpine = meta.high !== 'scree';
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -450,6 +451,8 @@ export class World {
     const w = smooth(4.5, 60, d);
     let h = lerp(nr.ele - 0.05, base, w);
     h += (fbm(x / 23, z / 23) - 0.5) * 7 * smooth(8, 45, d) * (1 - smooth(70, 100, d));
+    // dunes: the height model is too coarse to show them, so shape hummocks beside the path
+    if (this.dunes && base > 1) h += Math.max(0, fbm(x / 60 + 9, z / 60 + 3) - 0.4) * 24 * smooth(6, 34, d) * (1 - smooth(70, 100, d));
     return h;
   }
 
@@ -626,8 +629,11 @@ export class World {
         pos[k] = x; pos[k + 1] = skirt ? h - (clamped ? 1.5 : 45) : h - under; pos[k + 2] = z;
         nor[k] = -hx / 3 / nl; nor[k + 1] = 1 / nl; nor[k + 2] = -hz / 3 / nl;
         this.terrainColor(x, z, h, d, c);
+        // bare sand shows through on the dune tops and in blown-out hollows
+        const sand = this.dunes && h > 1.2 ? smooth(0.5, 0.62, fbm(x / 34 + 30, z / 34 + 7)) * smooth(4.5, 9, d) : 0;
+        if (sand > 0) c.lerp(this._c2.setRGB(0.83, 0.75, 0.56), sand * 0.92);
         col[k] = c.r; col[k + 1] = c.g; col[k + 2] = c.b;
-        sat[k / 3] = smooth(5, 16, d);
+        sat[k / 3] = smooth(5, 16, d) * (1 - sand * 0.85);
         k += 3;
       }
     }
@@ -693,7 +699,8 @@ export class World {
     const route = this.route, P = this._p;
     // four vertices a row: shoulder, edge, edge, shoulder. The shoulders slope
     // down to the ground so the tarmac never floats.
-    const STEP = 5, HALF = 3.2, SHOULDER = 4.3, DROP = 0.42;
+    const path = !!route.meta.path; // a cycle path is narrower than a road
+    const STEP = 5, HALF = path ? 2.4 : 3.2, SHOULDER = path ? 3.5 : 4.3, DROP = 0.42;
     const rows = Math.ceil(route.total / STEP) + 1;
     const pos = new Float32Array(rows * 12), uv = new Float32Array(rows * 8), nor = new Float32Array(rows * 12);
     for (let r = 0; r < rows; r++) {
@@ -772,7 +779,7 @@ export class World {
           const x = px + lx * o, z = pz + lz * o;
           const r1 = rand(), r2 = rand(), r3 = rand(), r4 = rand();
           const h = this.height(x, z);
-          if (this.roadDist < 6 || this.water) continue; // no trees on a sea dike
+          if (this.roadDist < 6 || route.meta.water === true) continue; // no trees on a sea dike
           const rd = this.roadDist;
           // villages: houses where the satellite picture looks built-up and the ground is fairly level
           if (img && rd > 11 && h < B[0] && img.urban(x, z) > 0.4) {
